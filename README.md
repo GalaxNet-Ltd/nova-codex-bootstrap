@@ -7,7 +7,7 @@ This setup does not install third-party software. It uses the official `codex` c
 ## Setup
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/<org>/novaaccess-codex-host/main/setup.sh | sh
+curl -fsSL https://raw.githubusercontent.com/GalaxNet-Ltd/nova-codex-bootstrap/refs/heads/main/setup.sh | sh
 ```
 
 If a `100.64.0.0/10` interface address is detected, setup assumes it is a Tailscale address and offers a small terminal menu. The recommended choice binds `codex app-server` only to that Tailscale-range address.
