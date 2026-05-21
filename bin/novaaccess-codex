@@ -1,0 +1,226 @@
+#!/bin/sh
+set -eu
+
+SERVICE_LABEL="dev.galaxnet.novaaccess.codex"
+SERVICE_FILE="novaaccess-codex.service"
+CONFIG_DIR="${HOME}/.codex"
+CONFIG_FILE="${CONFIG_DIR}/novaaccess-codex-host.env"
+TOKEN_FILE_DEFAULT="${CONFIG_DIR}/novaaccess-app-server-token"
+HELPER_PATH="${HOME}/.local/bin/novaaccess-codex"
+DEFAULT_SCHEME="ws"
+no_qr=0
+
+die() {
+  printf 'ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+command_exists() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+os_name() {
+  uname -s 2>/dev/null || printf 'unknown'
+}
+
+load_config() {
+  [ -f "$CONFIG_FILE" ] || die "Config file not found: $CONFIG_FILE"
+  # shellcheck disable=SC1090
+  . "$CONFIG_FILE"
+  listen="${NOVA_CODEX_LISTEN:-}"
+  port="${NOVA_CODEX_PORT:-14500}"
+  host="${NOVA_CODEX_HOST:-$listen}"
+  name="${NOVA_CODEX_NAME:-$(hostname 2>/dev/null || printf 'codex-host')}"
+  scheme="${NOVA_CODEX_SCHEME:-$DEFAULT_SCHEME}"
+  token_file="${NOVA_CODEX_TOKEN_FILE:-$TOKEN_FILE_DEFAULT}"
+  config_no_qr="${NOVA_CODEX_NO_QR:-0}"
+  [ "$no_qr" -eq 1 ] || no_qr="$config_no_qr"
+  [ -n "$listen" ] || die "Config does not include NOVA_CODEX_LISTEN. Rerun setup.sh with --listen <tailscale-ip> or --listen 0.0.0.0 --host <reachable-host>."
+}
+
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+base64url_encode() {
+  if base64 --help 2>&1 | grep -q -- '-w'; then
+    base64 -w 0
+  else
+    base64 | tr -d '\n'
+  fi | tr '+/' '-_' | tr -d '='
+}
+
+read_token() {
+  [ -f "$token_file" ] || die "Token file does not exist: $token_file"
+  tr -d '\r\n' < "$token_file"
+}
+
+make_pairing_uri() {
+  token="$(read_token)"
+  esc_name="$(json_escape "$name")"
+  esc_host="$(json_escape "$host")"
+  esc_token="$(json_escape "$token")"
+  payload="$(printf '{"type":"novaaccess-codex-host","version":1,"name":"%s","host":"%s","port":%s,"scheme":"%s","auth":{"mode":"capability-token","token":"%s"}}' "$esc_name" "$esc_host" "$port" "$scheme" "$esc_token" | base64url_encode)"
+  printf 'novaaccess-codex://import?payload=%s\n' "$payload"
+}
+
+print_pairing() {
+  load_config
+  pairing_uri="$(make_pairing_uri)"
+  if [ "$no_qr" -eq 0 ] && command_exists qrencode; then
+    qrencode -t ANSIUTF8 "$pairing_uri"
+    printf '\nPairing URI:\n\n  %s\n' "$pairing_uri"
+  else
+    if [ "$no_qr" -eq 1 ]; then
+      printf 'QR output skipped (--no-qr).\n\n'
+    else
+    cat <<EOF
+QR tool not found.
+
+EOF
+    fi
+    cat <<EOF
+Pairing URI:
+
+  ${pairing_uri}
+
+Copy this URI to your phone, then import it from inside the NovaAccess app.
+EOF
+  fi
+}
+
+restart_service() {
+  case "$(os_name)" in
+    Darwin)
+      plist="${HOME}/Library/LaunchAgents/${SERVICE_LABEL}.plist"
+      launchctl unload "$plist" >/dev/null 2>&1 || true
+      launchctl load "$plist"
+      launchctl start "$SERVICE_LABEL" || true
+      ;;
+    Linux)
+      systemctl --user daemon-reload
+      systemctl --user restart "$SERVICE_FILE"
+      ;;
+    *) die "Unsupported OS: $(os_name)" ;;
+  esac
+}
+
+stop_service() {
+  case "$(os_name)" in
+    Darwin)
+      launchctl stop "$SERVICE_LABEL" >/dev/null 2>&1 || true
+      launchctl unload "${HOME}/Library/LaunchAgents/${SERVICE_LABEL}.plist" >/dev/null 2>&1 || true
+      ;;
+    Linux)
+      systemctl --user stop "$SERVICE_FILE"
+      ;;
+    *) die "Unsupported OS: $(os_name)" ;;
+  esac
+}
+
+status_service() {
+  case "$(os_name)" in
+    Darwin) launchctl print "gui/$(id -u)/${SERVICE_LABEL}" ;;
+    Linux) systemctl --user status "$SERVICE_FILE" ;;
+    *) die "Unsupported OS: $(os_name)" ;;
+  esac
+}
+
+rotate_token() {
+  load_config
+  mkdir -p "$(dirname "$token_file")"
+  umask 077
+  if command_exists openssl; then
+    openssl rand -base64 32 > "$token_file"
+  else
+    head -c 32 /dev/urandom | base64 > "$token_file"
+  fi
+  chmod 600 "$token_file"
+  restart_service
+  print_pairing
+}
+
+confirm_delete_token() {
+  [ -r /dev/tty ] && [ -w /dev/tty ] || return 1
+  printf 'Delete NovaAccess Codex token and config? [y/N] ' > /dev/tty
+  IFS= read -r answer < /dev/tty || answer=""
+  case "$answer" in
+    y|Y|yes|YES) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+uninstall() {
+  delete_token=ask
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --keep-token) delete_token=no ;;
+      --delete-token) delete_token=yes ;;
+      *) die "Unknown uninstall option: $1" ;;
+    esac
+    shift
+  done
+
+  stop_service
+  case "$(os_name)" in
+    Darwin) rm -f "${HOME}/Library/LaunchAgents/${SERVICE_LABEL}.plist" ;;
+    Linux)
+      systemctl --user disable "$SERVICE_FILE" >/dev/null 2>&1 || true
+      rm -f "${HOME}/.config/systemd/user/${SERVICE_FILE}"
+      systemctl --user daemon-reload >/dev/null 2>&1 || true
+      ;;
+  esac
+
+  if [ "$delete_token" = "ask" ]; then
+    if confirm_delete_token; then
+      delete_token=yes
+    else
+      delete_token=no
+    fi
+  fi
+
+  if [ "$delete_token" = "yes" ]; then
+    rm -f "$CONFIG_FILE" "$TOKEN_FILE_DEFAULT"
+  fi
+  rm -f "$HELPER_PATH"
+  printf 'Uninstalled NovaAccess Codex host service.\n'
+}
+
+usage() {
+  cat <<'EOF'
+Usage:
+  novaaccess-codex status
+  novaaccess-codex restart
+  novaaccess-codex stop
+  novaaccess-codex print-pairing [--no-qr]
+  novaaccess-codex rotate-token
+  novaaccess-codex uninstall [--keep-token|--delete-token]
+EOF
+}
+
+cmd="${1:-}"
+[ -n "$cmd" ] || {
+  usage
+  exit 1
+}
+shift || true
+
+case "$cmd" in
+  status) status_service ;;
+  restart) restart_service ;;
+  stop) stop_service ;;
+  print-pairing)
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --no-qr) no_qr=1 ;;
+        *) die "Unknown print-pairing option: $1" ;;
+      esac
+      shift
+    done
+    print_pairing
+    ;;
+  rotate-token) rotate_token ;;
+  uninstall) uninstall "$@" ;;
+  --help|-h|help) usage ;;
+  *) die "Unknown command: $cmd" ;;
+esac

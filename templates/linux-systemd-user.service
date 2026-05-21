@@ -1,0 +1,13 @@
+[Unit]
+Description=NovaAccess Codex App Server
+After=network-online.target
+
+[Service]
+Type=simple
+Environment=PATH=/directory/containing/codex:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+ExecStart=/absolute/path/to/codex app-server --listen ws://100.64.x.y:14500 --ws-auth capability-token --ws-token-file %h/.codex/novaaccess-app-server-token
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
