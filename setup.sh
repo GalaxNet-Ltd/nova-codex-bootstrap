@@ -63,6 +63,10 @@ command_exists() {
   command -v "$1" >/dev/null 2>&1
 }
 
+has_tty() {
+  [ -r /dev/tty ] && [ -w /dev/tty ]
+}
+
 os_name() {
   uname -s 2>/dev/null || printf 'unknown'
 }
@@ -162,7 +166,7 @@ tty_read() {
   prompt="$1"
   default="$2"
   answer=""
-  if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+  if has_tty; then
     printf '%s' "$prompt" > /dev/tty
     IFS= read -r answer < /dev/tty || answer=""
   fi
@@ -204,12 +208,13 @@ stop_existing_service_quietly() {
 confirm_reconfigure_existing_setup() {
   existing_setup_present || return 0
 
-  if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
-    if [ "$assume_yes" -eq 1 ]; then
-      notice "Existing NovaAccess Codex setup detected; reconfiguring because --yes was provided."
-      stop_existing_service_quietly
-      return 0
-    fi
+  if [ "$assume_yes" -eq 1 ]; then
+    notice "Existing NovaAccess Codex setup detected; reconfiguring because --yes was provided."
+    stop_existing_service_quietly
+    return 0
+  fi
+
+  if ! has_tty; then
     die "Existing setup detected. Rerun interactively or pass --yes to reconfigure."
   fi
 
@@ -237,16 +242,6 @@ EOF
     printf 'Service: %s\n\n' "$service" > /dev/tty
   fi
 
-  if [ "$assume_yes" -eq 1 ]; then
-    printf 'Reconfiguring existing setup because --yes was provided.\n\n' > /dev/tty
-    stop_existing_service_quietly
-    return 0
-  fi
-
-  if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
-    die "Existing setup detected. Rerun interactively or pass --yes to reconfigure."
-  fi
-
   answer="$(tty_read "Reconfigure existing setup? [y/N]: " "n")"
   case "$answer" in
     y|Y|yes|YES)
@@ -262,7 +257,7 @@ EOF
 
 choose_listen_interactively() {
   tailscale_ip="$1"
-  if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+  if ! has_tty; then
     listen="$tailscale_ip"
     host="${host:-$tailscale_ip}"
     return
@@ -404,6 +399,10 @@ command_exists() {
   command -v "$1" >/dev/null 2>&1
 }
 
+has_tty() {
+  [ -r /dev/tty ] && [ -w /dev/tty ]
+}
+
 os_name() {
   uname -s 2>/dev/null || printf 'unknown'
 }
@@ -525,7 +524,7 @@ rotate_token() {
 }
 
 confirm_delete_token() {
-  [ -r /dev/tty ] && [ -w /dev/tty ] || return 1
+  has_tty || return 1
   printf 'Delete NovaAccess Codex token and config? [y/N] ' > /dev/tty
   IFS= read -r answer < /dev/tty || answer=""
   case "$answer" in

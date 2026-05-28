@@ -19,6 +19,10 @@ command_exists() {
   command -v "$1" >/dev/null 2>&1
 }
 
+has_tty() {
+  [ -r /dev/tty ] && [ -w /dev/tty ]
+}
+
 os_name() {
   uname -s 2>/dev/null || printf 'unknown'
 }
@@ -141,7 +145,7 @@ rotate_token() {
 }
 
 confirm_delete_token() {
-  [ -r /dev/tty ] && [ -w /dev/tty ] || return 1
+  has_tty || return 1
   printf 'Delete NovaAccess Codex token and config? [y/N] ' > /dev/tty
   IFS= read -r answer < /dev/tty || answer=""
   case "$answer" in

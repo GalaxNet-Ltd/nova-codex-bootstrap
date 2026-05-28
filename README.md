@@ -24,7 +24,7 @@ To force literal URI output even when `qrencode` is installed:
 ./setup.sh --no-qr
 ```
 
-If setup has already been run, `setup.sh` shows the current config and asks before reconfiguring it. For scripted reconfiguration:
+If setup has already been run, `setup.sh` shows the current config and asks before reconfiguring it. For scripted or non-interactive SSH reconfiguration:
 
 ```sh
 ./setup.sh --yes
