@@ -63,6 +63,29 @@ command_exists() {
   command -v "$1" >/dev/null 2>&1
 }
 
+find_codex_bin() {
+  if command_exists codex; then
+    command -v codex
+    return 0
+  fi
+
+  for candidate in \
+    "$HOME"/.nvm/versions/node/*/bin/codex \
+    "$HOME"/.npm-global/bin/codex \
+    "$HOME"/.local/bin/codex \
+    "$HOME"/bin/codex \
+    /opt/homebrew/bin/codex \
+    /usr/local/bin/codex
+  do
+    if [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 has_tty() {
   [ -r /dev/tty ] && [ -w /dev/tty ]
 }
@@ -772,9 +795,11 @@ fi
 port="${port:-$DEFAULT_PORT}"
 validate_port
 name="${name:-$(hostname_value)}"
-command_exists codex || die "codex was not found in PATH. Install Codex CLI first, then rerun this setup."
-codex_bin="$(command -v codex)"
+codex_bin="$(find_codex_bin || true)"
+[ -n "$codex_bin" ] || die "codex was not found. Install Codex CLI first, then rerun this setup."
 codex_dir="$(dirname "$codex_bin")"
+PATH="${codex_dir}:$PATH"
+export PATH
 
 confirm_reconfigure_existing_setup
 

@@ -2,7 +2,9 @@
 
 ## Codex Not Found
 
-`codex` was not found in `PATH`. Install Codex CLI first, then rerun the setup.
+`codex` was not found. Setup checks `PATH` and common Codex CLI install locations such as `~/.nvm`, `~/.npm-global`, `~/.local/bin`, and Homebrew.
+
+Install Codex CLI, log in with the account you want this host to use, then rerun setup.
 
 ## Port In Use
 
@@ -32,3 +34,26 @@ sudo pacman -S qrencode
 ## Cannot Connect From NovaAccess
 
 Check service status, host reachability, listen mode, token correctness, and firewall rules for the selected port.
+
+## NovaAccess Shows 403
+
+A `403` from the Codex host usually means the pairing token stored in NovaAccess no longer matches the running Codex app server.
+
+This can happen after switching Codex accounts on the host. Codex may expire or replace the auth state behind the app server, while NovaAccess still has the old host token saved in iOS Keychain.
+
+Fix:
+
+1. Delete the Codex host entry from NovaAccess.
+2. Rerun setup on the host:
+
+```sh
+./setup.sh --yes
+```
+
+3. Import the new pairing URI in NovaAccess.
+
+If you are testing literal URI import:
+
+```sh
+./setup.sh --yes --no-qr
+```
