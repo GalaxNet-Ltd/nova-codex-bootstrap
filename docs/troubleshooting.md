@@ -39,15 +39,15 @@ Check service status, host reachability, listen mode, token correctness, and fir
 
 A `403` from the Codex host usually means the pairing token stored in NovaAccess no longer matches the running Codex app server.
 
-This can happen after switching Codex accounts on the host. Codex may expire or replace the auth state behind the app server, while NovaAccess still has the old host token saved in iOS Keychain.
+This can happen after switching Codex accounts on the host. Codex may expire or replace auth state behind the app server, while NovaAccess still has the old host token saved in iOS Keychain.
 
 Fix:
 
 1. Delete the Codex host entry from NovaAccess.
-2. Rerun setup on the host:
+2. Rerun setup on the host and rotate the pairing token:
 
 ```sh
-./setup.sh --yes
+./setup.sh --yes --rotate-token
 ```
 
 3. Import the new pairing URI in NovaAccess.
@@ -55,5 +55,5 @@ Fix:
 If you are testing literal URI import:
 
 ```sh
-./setup.sh --yes --no-qr
+./setup.sh --yes --rotate-token --no-qr
 ```
