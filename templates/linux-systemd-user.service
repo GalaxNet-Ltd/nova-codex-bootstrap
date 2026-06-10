@@ -1,11 +1,11 @@
 [Unit]
-Description=NovaAccess Codex App Server
+Description=NovaScale Codex App Server
 After=network-online.target
 
 [Service]
 Type=simple
 Environment=PATH=/directory/containing/codex:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
-ExecStart=/absolute/path/to/codex app-server --listen ws://100.64.x.y:14500 --ws-auth capability-token --ws-token-file %h/.codex/novaaccess-app-server-token
+ExecStart=/absolute/path/to/codex app-server --listen ws://100.64.x.y:14500 --ws-auth capability-token --ws-token-file %h/.codex/novascale-app-server-token
 Restart=on-failure
 RestartSec=3
 

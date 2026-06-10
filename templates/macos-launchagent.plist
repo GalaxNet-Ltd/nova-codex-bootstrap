@@ -4,7 +4,7 @@
 <plist version="1.0">
   <dict>
     <key>Label</key>
-    <string>dev.galaxnet.novaaccess.codex</string>
+    <string>dev.galaxnet.novascale.codex</string>
     <key>ProgramArguments</key>
     <array>
       <string>/absolute/path/to/codex</string>
@@ -14,7 +14,7 @@
       <string>--ws-auth</string>
       <string>capability-token</string>
       <string>--ws-token-file</string>
-      <string>~/.codex/novaaccess-app-server-token</string>
+      <string>~/.codex/novascale-app-server-token</string>
     </array>
     <key>RunAtLoad</key>
     <true/>

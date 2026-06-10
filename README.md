@@ -1,6 +1,6 @@
-# NovaAccess Codex Host
+# NovaScale Codex Host
 
-Host-side setup utility for NovaAccess Codex integration. It configures a user-level `codex app-server` service, creates a capability token, and prints a pairing URI for NovaAccess iOS.
+Host-side setup utility for NovaScale Codex integration. It configures a user-level `codex app-server` service, creates a capability token, and prints a pairing URI for NovaScale iOS.
 
 This setup does not install third-party software. It uses the official `codex` command already installed on the host and the user's existing Tailscale networking mesh.
 
@@ -49,8 +49,8 @@ Create a token:
 ```sh
 mkdir -p "$HOME/.codex"
 umask 077
-openssl rand -base64 32 > "$HOME/.codex/novaaccess-app-server-token"
-chmod 600 "$HOME/.codex/novaaccess-app-server-token"
+openssl rand -base64 32 > "$HOME/.codex/novascale-app-server-token"
+chmod 600 "$HOME/.codex/novascale-app-server-token"
 ```
 
 Start the app server on your Tailscale IP:
@@ -59,47 +59,51 @@ Start the app server on your Tailscale IP:
 codex app-server \
   --listen ws://100.88.77.66:14500 \
   --ws-auth capability-token \
-  --ws-token-file "$HOME/.codex/novaaccess-app-server-token"
+  --ws-token-file "$HOME/.codex/novascale-app-server-token"
 ```
 
-For subnet-router mode, use `0.0.0.0` as the listen address and use the reachable subnet IP or hostname when creating the NovaAccess host entry.
+For subnet-router mode, use `0.0.0.0` as the listen address and use the reachable subnet IP or hostname when creating the NovaScale host entry.
 
 ## Helper
 
 Setup creates:
 
 ```text
-~/.local/bin/novaaccess-codex
+~/.local/bin/novascale-codex
 ```
 
 Commands:
 
 ```sh
-novaaccess-codex status
-novaaccess-codex restart
-novaaccess-codex stop
-novaaccess-codex print-pairing
-novaaccess-codex print-pairing --no-qr
-novaaccess-codex rotate-token
-novaaccess-codex uninstall
+novascale-codex status
+novascale-codex restart
+novascale-codex stop
+novascale-codex print-pairing
+novascale-codex print-pairing --no-qr
+novascale-codex rotate-token
+novascale-codex uninstall
 ```
 
 ## Files
 
 ```text
-~/.codex/novaaccess-codex-host.env
-~/.codex/novaaccess-app-server-token
-~/Library/LaunchAgents/dev.galaxnet.novaaccess.codex.plist
-~/.config/systemd/user/novaaccess-codex.service
+~/.codex/novascale-codex-host.env
+~/.codex/novascale-app-server-token
+~/Library/LaunchAgents/dev.galaxnet.novascale.codex.plist
+~/.config/systemd/user/novascale-codex.service
 ```
 
 ## Repository Structure
 
 If you clone this repository instead of running the setup via `curl`:
 
-- **`bin/novaaccess-codex`**: The service helper script. When running `./setup.sh` from a local clone, the setup script copies this file directly to the helper path. When installing via the `curl` piping method, the helper is generated from a copy embedded inside `setup.sh`.
+- **`bin/novascale-codex`**: The service helper script. When running `./setup.sh` from a local clone, the setup script copies this file directly to the helper path. When installing via the `curl` piping method, the helper is generated from a copy embedded inside `setup.sh`.
 - **`templates/`**: Contains static examples of the systemd service (`linux-systemd-user.service`) and macOS LaunchAgent (`macos-launchagent.plist`) configs. These are for manual setup reference only and are not read or executed by `setup.sh` (which generates service configs dynamically).
 
 ## Security
 
-NovaAccess Codex pairing is generated on your Codex host. It is not sent to GalaxNet or any website. NovaAccess imports it locally and stores the token in iOS Keychain.
+NovaScale Codex pairing is generated on your Codex host. It is not sent to GalaxNet or any website. NovaScale imports it locally and stores the token in iOS Keychain.
+
+## Roadmap
+
+APNs-based push notifications are planned for an upcoming release. We are still deciding whether to integrate through Codex hooks or ship a dedicated open-source host proxy in front of `codex app-server`.

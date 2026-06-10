@@ -1,12 +1,17 @@
 #!/bin/sh
 set -eu
 
-SERVICE_LABEL="dev.galaxnet.novaaccess.codex"
-SERVICE_FILE="novaaccess-codex.service"
+SERVICE_LABEL="dev.galaxnet.novascale.codex"
+SERVICE_FILE="novascale-codex.service"
 CONFIG_DIR="${HOME}/.codex"
-CONFIG_FILE="${CONFIG_DIR}/novaaccess-codex-host.env"
-TOKEN_FILE_DEFAULT="${CONFIG_DIR}/novaaccess-app-server-token"
-HELPER_PATH="${HOME}/.local/bin/novaaccess-codex"
+CONFIG_FILE="${CONFIG_DIR}/novascale-codex-host.env"
+TOKEN_FILE_DEFAULT="${CONFIG_DIR}/novascale-app-server-token"
+HELPER_PATH="${HOME}/.local/bin/novascale-codex"
+LEGACY_SERVICE_LABEL="dev.galaxnet.novaaccess.codex"
+LEGACY_SERVICE_FILE="novaaccess-codex.service"
+LEGACY_CONFIG_FILE="${CONFIG_DIR}/novaaccess-codex-host.env"
+LEGACY_TOKEN_FILE="${CONFIG_DIR}/novaaccess-app-server-token"
+LEGACY_HELPER_PATH="${HOME}/.local/bin/novaaccess-codex"
 DEFAULT_SCHEME="ws"
 no_qr=0
 
@@ -31,15 +36,15 @@ load_config() {
   [ -f "$CONFIG_FILE" ] || die "Config file not found: $CONFIG_FILE"
   # shellcheck disable=SC1090
   . "$CONFIG_FILE"
-  listen="${NOVA_CODEX_LISTEN:-}"
-  port="${NOVA_CODEX_PORT:-14500}"
-  host="${NOVA_CODEX_HOST:-$listen}"
-  name="${NOVA_CODEX_NAME:-$(hostname 2>/dev/null || printf 'codex-host')}"
-  scheme="${NOVA_CODEX_SCHEME:-$DEFAULT_SCHEME}"
-  token_file="${NOVA_CODEX_TOKEN_FILE:-$TOKEN_FILE_DEFAULT}"
-  config_no_qr="${NOVA_CODEX_NO_QR:-0}"
+  listen="${NOVASCALE_CODEX_LISTEN:-}"
+  port="${NOVASCALE_CODEX_PORT:-14500}"
+  host="${NOVASCALE_CODEX_HOST:-$listen}"
+  name="${NOVASCALE_CODEX_NAME:-$(hostname 2>/dev/null || printf 'codex-host')}"
+  scheme="${NOVASCALE_CODEX_SCHEME:-$DEFAULT_SCHEME}"
+  token_file="${NOVASCALE_CODEX_TOKEN_FILE:-$TOKEN_FILE_DEFAULT}"
+  config_no_qr="${NOVASCALE_CODEX_NO_QR:-0}"
   [ "$no_qr" -eq 1 ] || no_qr="$config_no_qr"
-  [ -n "$listen" ] || die "Config does not include NOVA_CODEX_LISTEN. Rerun setup.sh with --listen <tailscale-ip> or --listen 0.0.0.0 --host <reachable-host>."
+  [ -n "$listen" ] || die "Config does not include NOVASCALE_CODEX_LISTEN. Rerun setup.sh with --listen <tailscale-ip> or --listen 0.0.0.0 --host <reachable-host>."
 }
 
 json_escape() {
@@ -64,8 +69,8 @@ make_pairing_uri() {
   esc_name="$(json_escape "$name")"
   esc_host="$(json_escape "$host")"
   esc_token="$(json_escape "$token")"
-  payload="$(printf '{"type":"novaaccess-codex-host","version":1,"name":"%s","host":"%s","port":%s,"scheme":"%s","auth":{"mode":"capability-token","token":"%s"}}' "$esc_name" "$esc_host" "$port" "$scheme" "$esc_token" | base64url_encode)"
-  printf 'novaaccess-codex://import?payload=%s\n' "$payload"
+  payload="$(printf '{"type":"novascale-codex-host","version":1,"name":"%s","host":"%s","port":%s,"scheme":"%s","auth":{"mode":"capability-token","token":"%s"}}' "$esc_name" "$esc_host" "$port" "$scheme" "$esc_token" | base64url_encode)"
+  printf 'novascale-codex://import?payload=%s\n' "$payload"
 }
 
 print_pairing() {
@@ -88,7 +93,7 @@ Pairing URI:
 
   ${pairing_uri}
 
-Copy this URI to your phone, then import it from inside the NovaAccess app.
+Copy this URI to your phone, then import it from inside the NovaScale app.
 EOF
   fi
 }
@@ -114,9 +119,12 @@ stop_service() {
     Darwin)
       launchctl stop "$SERVICE_LABEL" >/dev/null 2>&1 || true
       launchctl unload "${HOME}/Library/LaunchAgents/${SERVICE_LABEL}.plist" >/dev/null 2>&1 || true
+      launchctl stop "$LEGACY_SERVICE_LABEL" >/dev/null 2>&1 || true
+      launchctl unload "${HOME}/Library/LaunchAgents/${LEGACY_SERVICE_LABEL}.plist" >/dev/null 2>&1 || true
       ;;
     Linux)
       systemctl --user stop "$SERVICE_FILE"
+      systemctl --user stop "$LEGACY_SERVICE_FILE" >/dev/null 2>&1 || true
       ;;
     *) die "Unsupported OS: $(os_name)" ;;
   esac
@@ -146,7 +154,7 @@ rotate_token() {
 
 confirm_delete_token() {
   has_tty || return 1
-  printf 'Delete NovaAccess Codex token and config? [y/N] ' > /dev/tty
+  printf 'Delete NovaScale Codex token and config? [y/N] ' > /dev/tty
   IFS= read -r answer < /dev/tty || answer=""
   case "$answer" in
     y|Y|yes|YES) return 0 ;;
@@ -171,9 +179,11 @@ uninstall() {
     Linux)
       systemctl --user disable "$SERVICE_FILE" >/dev/null 2>&1 || true
       rm -f "${HOME}/.config/systemd/user/${SERVICE_FILE}"
+      rm -f "${HOME}/.config/systemd/user/${LEGACY_SERVICE_FILE}"
       systemctl --user daemon-reload >/dev/null 2>&1 || true
       ;;
   esac
+  rm -f "${HOME}/Library/LaunchAgents/${LEGACY_SERVICE_LABEL}.plist"
 
   if [ "$delete_token" = "ask" ]; then
     if confirm_delete_token; then
@@ -184,21 +194,21 @@ uninstall() {
   fi
 
   if [ "$delete_token" = "yes" ]; then
-    rm -f "$CONFIG_FILE" "$TOKEN_FILE_DEFAULT"
+    rm -f "$CONFIG_FILE" "$TOKEN_FILE_DEFAULT" "$LEGACY_CONFIG_FILE" "$LEGACY_TOKEN_FILE"
   fi
-  rm -f "$HELPER_PATH"
-  printf 'Uninstalled NovaAccess Codex host service.\n'
+  rm -f "$HELPER_PATH" "$LEGACY_HELPER_PATH"
+  printf 'Uninstalled NovaScale Codex host service.\n'
 }
 
 usage() {
   cat <<'EOF'
 Usage:
-  novaaccess-codex status
-  novaaccess-codex restart
-  novaaccess-codex stop
-  novaaccess-codex print-pairing [--no-qr]
-  novaaccess-codex rotate-token
-  novaaccess-codex uninstall [--keep-token|--delete-token]
+  novascale-codex status
+  novascale-codex restart
+  novascale-codex stop
+  novascale-codex print-pairing [--no-qr]
+  novascale-codex rotate-token
+  novascale-codex uninstall [--keep-token|--delete-token]
 EOF
 }
 
