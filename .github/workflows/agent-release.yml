@@ -76,7 +76,10 @@ jobs:
           chmod 755 "$package_dir/novascale-agent"
           cp LICENSE "$package_dir/LICENSE"
           cp -R notifications/third_party_licenses "$package_dir/THIRD_PARTY_LICENSES"
-          "$package_dir/novascale-agent" version | grep -Fx "$VERSION"
+          file "$package_dir/novascale-agent"
+          if [[ "$TARGET_ARCH" == "amd64" ]]; then
+            "$package_dir/novascale-agent" version | grep -Fx "$VERSION"
+          fi
           archive="release/novascale-agent_${VERSION}_linux_${TARGET_ARCH}.tar.gz"
           tar -C "$package_dir" -czf "$archive" \
             novascale-agent LICENSE THIRD_PARTY_LICENSES
@@ -136,7 +139,7 @@ jobs:
           cp LICENSE "$package_dir/LICENSE"
           cp -R notifications/third_party_licenses "$package_dir/THIRD_PARTY_LICENSES"
           "$package_dir/novascale-agent" version | grep -Fx "$VERSION"
-          lipo -verify_arch arm64 x86_64 "$package_dir/novascale-agent"
+          lipo "$package_dir/novascale-agent" -verify_arch arm64 x86_64
       - name: Import Developer ID identity
         shell: bash
         env:
