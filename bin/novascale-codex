@@ -3,10 +3,16 @@ set -eu
 
 SERVICE_LABEL="dev.galaxnet.novascale.codex"
 SERVICE_FILE="novascale-codex.service"
+AGENT_SERVICE_LABEL="dev.galaxnet.novascale.agent"
+AGENT_SERVICE_FILE="novascale-agent.service"
 CONFIG_DIR="${HOME}/.codex"
 CONFIG_FILE="${CONFIG_DIR}/novascale-codex-host.env"
 TOKEN_FILE_DEFAULT="${CONFIG_DIR}/novascale-app-server-token"
 HELPER_PATH="${HOME}/.local/bin/novascale-codex"
+AGENT_PATH="${HOME}/.local/bin/novascale-agent"
+AGENT_CONFIG_DIR="${HOME}/.config/novascale-agent"
+AGENT_STATE_DIR="${HOME}/.local/state/novascale-agent"
+CODEX_HOOKS_FILE="${HOME}/.codex/hooks.json"
 LEGACY_SERVICE_LABEL="dev.galaxnet.novaaccess.codex"
 LEGACY_SERVICE_FILE="novaaccess-codex.service"
 LEGACY_CONFIG_FILE="${CONFIG_DIR}/novaaccess-codex-host.env"
@@ -138,6 +144,43 @@ status_service() {
   esac
 }
 
+restart_notification_service() {
+  [ -x "$AGENT_PATH" ] || die "Notification agent is not installed: $AGENT_PATH"
+  case "$(os_name)" in
+    Darwin)
+      plist="${HOME}/Library/LaunchAgents/${AGENT_SERVICE_LABEL}.plist"
+      [ -f "$plist" ] || die "Notification LaunchAgent not found: $plist"
+      launchctl unload "$plist" >/dev/null 2>&1 || true
+      launchctl load "$plist"
+      launchctl start "$AGENT_SERVICE_LABEL" || true
+      ;;
+    Linux)
+      systemctl --user daemon-reload
+      systemctl --user restart "$AGENT_SERVICE_FILE"
+      ;;
+    *) die "Unsupported OS: $(os_name)" ;;
+  esac
+}
+
+stop_notification_service() {
+  case "$(os_name)" in
+    Darwin)
+      launchctl stop "$AGENT_SERVICE_LABEL" >/dev/null 2>&1 || true
+      launchctl unload "${HOME}/Library/LaunchAgents/${AGENT_SERVICE_LABEL}.plist" >/dev/null 2>&1 || true
+      ;;
+    Linux) systemctl --user stop "$AGENT_SERVICE_FILE" >/dev/null 2>&1 || true ;;
+    *) die "Unsupported OS: $(os_name)" ;;
+  esac
+}
+
+status_notification_service() {
+  case "$(os_name)" in
+    Darwin) launchctl print "gui/$(id -u)/${AGENT_SERVICE_LABEL}" ;;
+    Linux) systemctl --user status "$AGENT_SERVICE_FILE" ;;
+    *) die "Unsupported OS: $(os_name)" ;;
+  esac
+}
+
 rotate_token() {
   load_config
   mkdir -p "$(dirname "$token_file")"
@@ -164,21 +207,36 @@ confirm_delete_token() {
 
 uninstall() {
   delete_token=ask
+  delete_agent_state=no
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --keep-token) delete_token=no ;;
       --delete-token) delete_token=yes ;;
+      --keep-agent-state) delete_agent_state=no ;;
+      --delete-agent-state) delete_agent_state=yes ;;
       *) die "Unknown uninstall option: $1" ;;
     esac
     shift
   done
 
   stop_service
+  stop_notification_service
+  if [ -x "$AGENT_PATH" ]; then
+    "$AGENT_PATH" hooks uninstall --agent-path "$AGENT_PATH" --hooks-file "$CODEX_HOOKS_FILE" >/dev/null 2>&1 || \
+      printf 'WARNING: Could not remove NovaScale Codex hooks automatically. Review %s manually.\n' "$CODEX_HOOKS_FILE" >&2
+  elif [ -f "$CODEX_HOOKS_FILE" ]; then
+    printf 'WARNING: Notification agent is missing. Review %s for a stale NovaScale hook command.\n' "$CODEX_HOOKS_FILE" >&2
+  fi
   case "$(os_name)" in
-    Darwin) rm -f "${HOME}/Library/LaunchAgents/${SERVICE_LABEL}.plist" ;;
+    Darwin)
+      rm -f "${HOME}/Library/LaunchAgents/${SERVICE_LABEL}.plist"
+      rm -f "${HOME}/Library/LaunchAgents/${AGENT_SERVICE_LABEL}.plist"
+      ;;
     Linux)
       systemctl --user disable "$SERVICE_FILE" >/dev/null 2>&1 || true
+      systemctl --user disable "$AGENT_SERVICE_FILE" >/dev/null 2>&1 || true
       rm -f "${HOME}/.config/systemd/user/${SERVICE_FILE}"
+      rm -f "${HOME}/.config/systemd/user/${AGENT_SERVICE_FILE}"
       rm -f "${HOME}/.config/systemd/user/${LEGACY_SERVICE_FILE}"
       systemctl --user daemon-reload >/dev/null 2>&1 || true
       ;;
@@ -196,7 +254,10 @@ uninstall() {
   if [ "$delete_token" = "yes" ]; then
     rm -f "$CONFIG_FILE" "$TOKEN_FILE_DEFAULT" "$LEGACY_CONFIG_FILE" "$LEGACY_TOKEN_FILE"
   fi
-  rm -f "$HELPER_PATH" "$LEGACY_HELPER_PATH"
+  if [ "$delete_agent_state" = "yes" ]; then
+    rm -rf "$AGENT_CONFIG_DIR" "$AGENT_STATE_DIR"
+  fi
+  rm -f "$AGENT_PATH" "$HELPER_PATH" "$LEGACY_HELPER_PATH"
   printf 'Uninstalled NovaScale Codex host service.\n'
 }
 
@@ -206,9 +267,12 @@ Usage:
   novascale-codex status
   novascale-codex restart
   novascale-codex stop
+  novascale-codex notification-status
+  novascale-codex notification-restart
+  novascale-codex notification-stop
   novascale-codex print-pairing [--no-qr]
   novascale-codex rotate-token
-  novascale-codex uninstall [--keep-token|--delete-token]
+  novascale-codex uninstall [--keep-token|--delete-token] [--keep-agent-state|--delete-agent-state]
 EOF
 }
 
@@ -223,6 +287,9 @@ case "$cmd" in
   status) status_service ;;
   restart) restart_service ;;
   stop) stop_service ;;
+  notification-status) status_notification_service ;;
+  notification-restart) restart_notification_service ;;
+  notification-stop) stop_notification_service ;;
   print-pairing)
     while [ "$#" -gt 0 ]; do
       case "$1" in

@@ -1,0 +1,25 @@
+# Emacs Temp files.
+*~
+.*
+
+# Local notification development state and secrets.
+.env.local
+.novascale-notify/
+*.p8
+
+# Maintainer-only instructions, notes, and linked development repositories.
+/AGENTS.md
+/dev-local/
+
+# Go build outputs.
+/notifications/dist/
+/notifications/dist.tar.gz
+/notifications/novascale-agent
+
+# Keep repository-level ignore definitions themselves visible to Git.
+!.gitignore
+
+# Public release automation. Keep the dotfile deny-by-default rule above.
+!/.github/
+!/.github/workflows/
+!/.github/workflows/agent-release.yml

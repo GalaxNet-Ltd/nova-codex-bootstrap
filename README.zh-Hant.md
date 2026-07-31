@@ -30,6 +30,16 @@ curl -fsSL https://raw.githubusercontent.com/GalaxNet-Ltd/nova-codex-bootstrap/r
 ./setup.sh --yes
 ```
 
+### 向後相容性
+
+上面的預設指令仍然只安裝穩定的 App Server wrapper。它不會安裝通知
+agent、修改 Codex hooks，也不需要通知後端。包含目前 App Store 版本在
+內的舊版 NovaScale，仍可依原方式安裝並使用 Codex 主機。
+
+通知功能是明確啟用的附加功能。開發階段只有傳入
+`--enable-notifications --dev-agent` 才會啟用；未來的簽署發行版也不會
+在未告知使用者的情況下改變既有安裝。
+
 ## 進階子網模式
 
 僅當主機位於 Tailscale 子網路由後方，或位於可信任的私有網路中時，才使用 `0.0.0.0`：
@@ -78,11 +88,17 @@ codex app-server \
 novascale-codex status
 novascale-codex restart
 novascale-codex stop
+novascale-codex notification-status
+novascale-codex notification-restart
+novascale-codex notification-stop
 novascale-codex print-pairing
 novascale-codex print-pairing --no-qr
 novascale-codex rotate-token
 novascale-codex uninstall
 ```
+
+統一 helper 中會提供 `notification-*` 指令，但只有明確安裝通知 agent
+後這些指令才可使用。
 
 ## 檔案
 
@@ -106,4 +122,6 @@ NovaScale Codex 配對資訊在你的 Codex 主機上產生。它不會傳送到
 
 ## 路線圖
 
-基於 APNs 的推播通知計畫在後續版本中加入。我們仍在評估是透過 Codex hooks 整合，還是在 `codex app-server` 前提供一個專用的開源主機代理。
+基於 APNs 的推播通知正透過 Codex hooks 與獨立、僅出站的 companion
+agent 開發。此 agent 不是代理，也不會進入權威 App Server/Tailscale
+連線路徑。預設的 wrapper-only 安裝將繼續相容舊版 App。

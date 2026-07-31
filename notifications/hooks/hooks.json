@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__NOVASCALE_AGENT_PATH__ hook",
+            "timeout": 3,
+            "statusMessage": "Notifying NovaScale"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__NOVASCALE_AGENT_PATH__ hook",
+            "timeout": 3,
+            "statusMessage": "Notifying NovaScale"
+          }
+        ]
+      }
+    ]
+  }
+}

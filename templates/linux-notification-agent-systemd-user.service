@@ -1,0 +1,13 @@
+[Unit]
+Description=NovaScale notification agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/novascale-agent serve
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

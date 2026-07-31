@@ -4,6 +4,8 @@ set -eu
 APP_NAME="NovaScale Codex"
 SERVICE_LABEL="dev.galaxnet.novascale.codex"
 SERVICE_FILE="novascale-codex.service"
+AGENT_SERVICE_LABEL="dev.galaxnet.novascale.agent"
+AGENT_SERVICE_FILE="novascale-agent.service"
 DEFAULT_PORT="14500"
 DEFAULT_SCHEME="ws"
 CONFIG_DIR="${HOME}/.codex"
@@ -11,6 +13,11 @@ CONFIG_FILE="${CONFIG_DIR}/novascale-codex-host.env"
 TOKEN_FILE="${CONFIG_DIR}/novascale-app-server-token"
 HELPER_DIR="${HOME}/.local/bin"
 HELPER_PATH="${HELPER_DIR}/novascale-codex"
+AGENT_PATH="${HELPER_DIR}/novascale-agent"
+AGENT_CONFIG_DIR="${HOME}/.config/novascale-agent"
+AGENT_CONFIG_FILE="${AGENT_CONFIG_DIR}/config.json"
+AGENT_STATE_DIR="${HOME}/.local/state/novascale-agent"
+CODEX_HOOKS_FILE="${CONFIG_DIR}/hooks.json"
 LEGACY_SERVICE_LABEL="dev.galaxnet.novaaccess.codex"
 LEGACY_SERVICE_FILE="novaaccess-codex.service"
 LEGACY_CONFIG_FILE="${CONFIG_DIR}/novaaccess-codex-host.env"
@@ -18,6 +25,13 @@ LEGACY_TOKEN_FILE="${CONFIG_DIR}/novaaccess-app-server-token"
 LEGACY_HELPER_PATH="${HELPER_DIR}/novaaccess-codex"
 codex_bin=""
 codex_dir=""
+agent_binary_source=""
+dev_agent=0
+agent_incoming_version=""
+agent_previous_binary_version=""
+agent_previous_live_version=""
+agent_binary_changed=0
+agent_restart_required=0
 
 listen=""
 listen_set=0
@@ -29,6 +43,10 @@ no_start=0
 print_only=0
 no_qr=0
 assume_yes=0
+notification_requested=0
+notification_disabled=0
+notification_endpoint=""
+no_hook_install=0
 
 usage() {
   cat <<'EOF'
@@ -47,6 +65,14 @@ Options:
   --print-only          Do not configure service, only print current pairing info.
   --no-qr               Print the pairing URI without using qrencode.
   --yes                 Reconfigure an existing setup without prompting.
+  --enable-notifications
+                        Install and configure the notification agent.
+  --notification-endpoint <url>
+                        Notification backend URL used for first enrollment.
+  --dev-agent           Install an unsigned local agent build from notifications/dist.
+  --agent-binary <path> Install this prebuilt novascale-agent binary.
+  --no-hook-install     Install the agent without modifying Codex hooks.json.
+  --no-notifications    Leave any notification-agent installation unchanged.
   --help                Show this help.
 
 When a 100.64.0.0/10 interface address is detected, the setup offers an
@@ -210,6 +236,14 @@ service_path() {
   esac
 }
 
+agent_service_path() {
+  case "$(os_name)" in
+    Darwin) printf '%s/Library/LaunchAgents/%s.plist\n' "$HOME" "$AGENT_SERVICE_LABEL" ;;
+    Linux) printf '%s/.config/systemd/user/%s\n' "$HOME" "$AGENT_SERVICE_FILE" ;;
+    *) return 1 ;;
+  esac
+}
+
 legacy_service_path() {
   case "$(os_name)" in
     Darwin) printf '%s/Library/LaunchAgents/%s.plist\n' "$HOME" "$LEGACY_SERVICE_LABEL" ;;
@@ -229,6 +263,10 @@ existing_setup_present() {
   [ -f "$LEGACY_HELPER_PATH" ] && return 0
   [ -f "$TOKEN_FILE" ] && return 0
   [ -f "$LEGACY_TOKEN_FILE" ] && return 0
+  [ -f "$AGENT_CONFIG_FILE" ] && return 0
+  [ -x "$AGENT_PATH" ] && return 0
+  agent_service="$(agent_service_path 2>/dev/null || true)"
+  [ -n "$agent_service" ] && [ -f "$agent_service" ] && return 0
   return 1
 }
 
@@ -446,6 +484,240 @@ install_helper() {
   esac
 }
 
+agent_platform() {
+  agent_os="$(os_name)"
+  agent_arch="$(uname -m 2>/dev/null || true)"
+  case "$agent_os" in
+    Darwin) agent_os=darwin ;;
+    Linux) agent_os=linux ;;
+    *) return 1 ;;
+  esac
+  case "$agent_arch" in
+    arm64|aarch64) agent_arch=arm64 ;;
+    x86_64|amd64) agent_arch=amd64 ;;
+    *) return 1 ;;
+  esac
+  printf '%s-%s\n' "$agent_os" "$agent_arch"
+}
+
+find_agent_binary() {
+  if [ -n "$agent_binary_source" ]; then
+    [ -x "$agent_binary_source" ] || die "Notification agent binary is not executable: $agent_binary_source"
+    printf '%s\n' "$agent_binary_source"
+    return 0
+  fi
+
+  if [ "$dev_agent" -eq 1 ]; then
+    setup_source_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+    platform="$(agent_platform || true)"
+    [ -n "$platform" ] || return 1
+    for candidate in \
+      "${setup_source_dir}/notifications/dist/${platform}/novascale-agent" \
+      "${setup_source_dir}/dist/${platform}/novascale-agent"
+    do
+      if [ -x "$candidate" ]; then
+        printf '%s\n' "$candidate"
+        return 0
+      fi
+    done
+  fi
+  if [ -x "$AGENT_PATH" ]; then
+    printf '%s\n' "$AGENT_PATH"
+    return 0
+  fi
+  return 1
+}
+
+install_agent_binary() {
+  source_path="$1"
+  mkdir -p "$HELPER_DIR"
+  if [ "$source_path" != "$AGENT_PATH" ]; then
+    temporary_agent="${AGENT_PATH}.tmp.$$"
+    cp "$source_path" "$temporary_agent"
+    chmod 755 "$temporary_agent"
+    mv "$temporary_agent" "$AGENT_PATH"
+  else
+    chmod 755 "$AGENT_PATH"
+  fi
+  "$AGENT_PATH" version >/dev/null
+}
+
+prepare_agent_upgrade() {
+  source_path="$1"
+  agent_incoming_version="$("$source_path" version 2>/dev/null || true)"
+  [ -n "$agent_incoming_version" ] || die "Notification agent did not report its version: $source_path"
+  agent_previous_binary_version=""
+  agent_previous_live_version=""
+  agent_binary_changed=0
+  agent_restart_required=0
+
+  if [ -x "$AGENT_PATH" ]; then
+    agent_previous_binary_version="$("$AGENT_PATH" version 2>/dev/null || true)"
+    agent_previous_live_version="$("$AGENT_PATH" daemon-version 2>/dev/null || true)"
+    if [ "$source_path" != "$AGENT_PATH" ] && ! cmp -s "$source_path" "$AGENT_PATH"; then
+      agent_binary_changed=1
+    fi
+  fi
+
+  if [ "$agent_binary_changed" -eq 1 ]; then
+    agent_restart_required=1
+  elif [ -n "$agent_previous_live_version" ]; then
+    if [ "$agent_previous_live_version" != "$agent_incoming_version" ]; then
+      agent_restart_required=1
+    fi
+  elif [ -S "${AGENT_STATE_DIR}/agent.sock" ]; then
+    # Agents released before live-version reporting require one upgrade
+    # restart so future setup runs can compare the actual daemon version.
+    agent_restart_required=1
+  elif [ -n "$agent_previous_binary_version" ] && \
+       [ "$agent_previous_binary_version" != "$agent_incoming_version" ]; then
+    agent_restart_required=1
+  fi
+}
+
+enroll_notification_agent() {
+  if [ -f "$AGENT_CONFIG_FILE" ]; then
+    notice "Existing notification-agent identity detected; preserving its host ID and private key."
+    "$AGENT_PATH" status >/dev/null
+    return 0
+  fi
+  [ -n "$notification_endpoint" ] || die "--notification-endpoint is required for first notification-agent enrollment"
+  "$AGENT_PATH" init --endpoint "$notification_endpoint"
+}
+
+install_agent_hooks() {
+  if [ "$no_hook_install" -eq 1 ]; then
+    notice "Skipping Codex hook installation because --no-hook-install was provided."
+    return 0
+  fi
+  "$AGENT_PATH" hooks install --agent-path "$AGENT_PATH" --hooks-file "$CODEX_HOOKS_FILE"
+}
+
+migrate_development_agent_hooks() {
+  source_path="$1"
+  [ "$source_path" != "$AGENT_PATH" ] || return 0
+  "$AGENT_PATH" hooks uninstall --agent-path "$source_path" --hooks-file "$CODEX_HOOKS_FILE" >/dev/null
+}
+
+install_macos_agent_service() {
+  launch_dir="${HOME}/Library/LaunchAgents"
+  plist="${launch_dir}/${AGENT_SERVICE_LABEL}.plist"
+  mkdir -p "$launch_dir" "$AGENT_STATE_DIR"
+  chmod 700 "$AGENT_STATE_DIR"
+  cat > "$plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>${AGENT_SERVICE_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>${AGENT_PATH}</string>
+      <string>serve</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardOutPath</key>
+    <string>${AGENT_STATE_DIR}/agent.log</string>
+    <key>StandardErrorPath</key>
+    <string>${AGENT_STATE_DIR}/agent.err.log</string>
+  </dict>
+</plist>
+EOF
+  chmod 600 "$plist"
+  if [ "$no_start" -eq 0 ]; then
+    if [ "$agent_restart_required" -eq 1 ]; then
+      notice "Notification agent ${agent_previous_live_version:-unknown} -> ${agent_incoming_version}; restarting its daemon now that setup is complete."
+      launchctl unload "$plist" >/dev/null 2>&1 || true
+      launchctl load "$plist"
+      launchctl start "$AGENT_SERVICE_LABEL" || true
+    elif ! launchctl print "gui/$(id -u)/${AGENT_SERVICE_LABEL}" >/dev/null 2>&1; then
+      launchctl load "$plist"
+      launchctl start "$AGENT_SERVICE_LABEL" || true
+    fi
+  elif [ "$agent_restart_required" -eq 1 ]; then
+    notice "Notification agent update installed; --no-start left the existing daemon unchanged until its next start."
+  fi
+}
+
+install_linux_agent_service() {
+  systemd_dir="${HOME}/.config/systemd/user"
+  service="${systemd_dir}/${AGENT_SERVICE_FILE}"
+  mkdir -p "$systemd_dir" "$AGENT_STATE_DIR"
+  chmod 700 "$AGENT_STATE_DIR"
+  cat > "$service" <<EOF
+[Unit]
+Description=NovaScale Notification Agent
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=${AGENT_PATH} serve
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+EOF
+  chmod 600 "$service"
+  systemctl --user daemon-reload
+  if [ "$no_start" -eq 0 ]; then
+    systemctl --user enable "$AGENT_SERVICE_FILE" >/dev/null
+    if [ "$agent_restart_required" -eq 1 ]; then
+      notice "Notification agent ${agent_previous_live_version:-unknown} -> ${agent_incoming_version}; restarting its daemon now that setup is complete."
+      systemctl --user restart "$AGENT_SERVICE_FILE"
+    else
+      systemctl --user start "$AGENT_SERVICE_FILE"
+    fi
+  elif [ "$agent_restart_required" -eq 1 ]; then
+    notice "Notification agent update installed; --no-start left the existing daemon unchanged until its next start."
+  fi
+}
+
+install_agent_service() {
+  case "$(os_name)" in
+    Darwin) install_macos_agent_service ;;
+    Linux) install_linux_agent_service ;;
+    *) die "Unsupported OS: $(os_name). macOS and Linux are supported." ;;
+  esac
+}
+
+configure_notification_agent() {
+  [ "$notification_disabled" -eq 0 ] || return 0
+  if [ "$notification_requested" -eq 0 ] && [ ! -f "$AGENT_CONFIG_FILE" ]; then
+    return 0
+  fi
+  source_path="$(find_agent_binary || true)"
+  [ -n "$source_path" ] || die "No installed notification agent found. Until signed releases are available, build locally and pass --dev-agent or --agent-binary <path>."
+  if [ "$dev_agent" -eq 1 ] || [ -n "$agent_binary_source" ]; then
+    notice "Development mode: installing an unsigned local notification-agent binary."
+  fi
+  prepare_agent_upgrade "$source_path"
+  install_agent_binary "$source_path"
+  enroll_notification_agent
+  migrate_development_agent_hooks "$source_path"
+  install_agent_hooks
+  install_agent_service
+}
+
+preflight_notification_agent() {
+  [ "$notification_disabled" -eq 0 ] || return 0
+  if [ "$notification_requested" -eq 0 ] && [ ! -f "$AGENT_CONFIG_FILE" ]; then
+    return 0
+  fi
+  source_path="$(find_agent_binary || true)"
+  [ -n "$source_path" ] || die "No installed notification agent found. Until signed releases are available, build locally and pass --dev-agent or --agent-binary <path>."
+  if [ ! -f "$AGENT_CONFIG_FILE" ]; then
+    [ -n "$notification_endpoint" ] || die "--notification-endpoint is required for first notification-agent enrollment"
+  fi
+}
+
 write_embedded_helper() {
   helper_target="$1"
   cat > "$helper_target" <<'NOVASCALE_CODEX_HELPER'
@@ -454,10 +726,16 @@ set -eu
 
 SERVICE_LABEL="dev.galaxnet.novascale.codex"
 SERVICE_FILE="novascale-codex.service"
+AGENT_SERVICE_LABEL="dev.galaxnet.novascale.agent"
+AGENT_SERVICE_FILE="novascale-agent.service"
 CONFIG_DIR="${HOME}/.codex"
 CONFIG_FILE="${CONFIG_DIR}/novascale-codex-host.env"
 TOKEN_FILE_DEFAULT="${CONFIG_DIR}/novascale-app-server-token"
 HELPER_PATH="${HOME}/.local/bin/novascale-codex"
+AGENT_PATH="${HOME}/.local/bin/novascale-agent"
+AGENT_CONFIG_DIR="${HOME}/.config/novascale-agent"
+AGENT_STATE_DIR="${HOME}/.local/state/novascale-agent"
+CODEX_HOOKS_FILE="${HOME}/.codex/hooks.json"
 LEGACY_SERVICE_LABEL="dev.galaxnet.novaaccess.codex"
 LEGACY_SERVICE_FILE="novaaccess-codex.service"
 LEGACY_CONFIG_FILE="${CONFIG_DIR}/novaaccess-codex-host.env"
@@ -485,6 +763,7 @@ os_name() {
 
 load_config() {
   [ -f "$CONFIG_FILE" ] || die "Config file not found: $CONFIG_FILE"
+  # shellcheck disable=SC1090
   . "$CONFIG_FILE"
   listen="${NOVASCALE_CODEX_LISTEN:-}"
   port="${NOVASCALE_CODEX_PORT:-14500}"
@@ -588,6 +867,43 @@ status_service() {
   esac
 }
 
+restart_notification_service() {
+  [ -x "$AGENT_PATH" ] || die "Notification agent is not installed: $AGENT_PATH"
+  case "$(os_name)" in
+    Darwin)
+      plist="${HOME}/Library/LaunchAgents/${AGENT_SERVICE_LABEL}.plist"
+      [ -f "$plist" ] || die "Notification LaunchAgent not found: $plist"
+      launchctl unload "$plist" >/dev/null 2>&1 || true
+      launchctl load "$plist"
+      launchctl start "$AGENT_SERVICE_LABEL" || true
+      ;;
+    Linux)
+      systemctl --user daemon-reload
+      systemctl --user restart "$AGENT_SERVICE_FILE"
+      ;;
+    *) die "Unsupported OS: $(os_name)" ;;
+  esac
+}
+
+stop_notification_service() {
+  case "$(os_name)" in
+    Darwin)
+      launchctl stop "$AGENT_SERVICE_LABEL" >/dev/null 2>&1 || true
+      launchctl unload "${HOME}/Library/LaunchAgents/${AGENT_SERVICE_LABEL}.plist" >/dev/null 2>&1 || true
+      ;;
+    Linux) systemctl --user stop "$AGENT_SERVICE_FILE" >/dev/null 2>&1 || true ;;
+    *) die "Unsupported OS: $(os_name)" ;;
+  esac
+}
+
+status_notification_service() {
+  case "$(os_name)" in
+    Darwin) launchctl print "gui/$(id -u)/${AGENT_SERVICE_LABEL}" ;;
+    Linux) systemctl --user status "$AGENT_SERVICE_FILE" ;;
+    *) die "Unsupported OS: $(os_name)" ;;
+  esac
+}
+
 rotate_token() {
   load_config
   mkdir -p "$(dirname "$token_file")"
@@ -614,21 +930,36 @@ confirm_delete_token() {
 
 uninstall() {
   delete_token=ask
+  delete_agent_state=no
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --keep-token) delete_token=no ;;
       --delete-token) delete_token=yes ;;
+      --keep-agent-state) delete_agent_state=no ;;
+      --delete-agent-state) delete_agent_state=yes ;;
       *) die "Unknown uninstall option: $1" ;;
     esac
     shift
   done
 
   stop_service
+  stop_notification_service
+  if [ -x "$AGENT_PATH" ]; then
+    "$AGENT_PATH" hooks uninstall --agent-path "$AGENT_PATH" --hooks-file "$CODEX_HOOKS_FILE" >/dev/null 2>&1 || \
+      printf 'WARNING: Could not remove NovaScale Codex hooks automatically. Review %s manually.\n' "$CODEX_HOOKS_FILE" >&2
+  elif [ -f "$CODEX_HOOKS_FILE" ]; then
+    printf 'WARNING: Notification agent is missing. Review %s for a stale NovaScale hook command.\n' "$CODEX_HOOKS_FILE" >&2
+  fi
   case "$(os_name)" in
-    Darwin) rm -f "${HOME}/Library/LaunchAgents/${SERVICE_LABEL}.plist" ;;
+    Darwin)
+      rm -f "${HOME}/Library/LaunchAgents/${SERVICE_LABEL}.plist"
+      rm -f "${HOME}/Library/LaunchAgents/${AGENT_SERVICE_LABEL}.plist"
+      ;;
     Linux)
       systemctl --user disable "$SERVICE_FILE" >/dev/null 2>&1 || true
+      systemctl --user disable "$AGENT_SERVICE_FILE" >/dev/null 2>&1 || true
       rm -f "${HOME}/.config/systemd/user/${SERVICE_FILE}"
+      rm -f "${HOME}/.config/systemd/user/${AGENT_SERVICE_FILE}"
       rm -f "${HOME}/.config/systemd/user/${LEGACY_SERVICE_FILE}"
       systemctl --user daemon-reload >/dev/null 2>&1 || true
       ;;
@@ -646,7 +977,10 @@ uninstall() {
   if [ "$delete_token" = "yes" ]; then
     rm -f "$CONFIG_FILE" "$TOKEN_FILE_DEFAULT" "$LEGACY_CONFIG_FILE" "$LEGACY_TOKEN_FILE"
   fi
-  rm -f "$HELPER_PATH" "$LEGACY_HELPER_PATH"
+  if [ "$delete_agent_state" = "yes" ]; then
+    rm -rf "$AGENT_CONFIG_DIR" "$AGENT_STATE_DIR"
+  fi
+  rm -f "$AGENT_PATH" "$HELPER_PATH" "$LEGACY_HELPER_PATH"
   printf 'Uninstalled NovaScale Codex host service.\n'
 }
 
@@ -656,9 +990,12 @@ Usage:
   novascale-codex status
   novascale-codex restart
   novascale-codex stop
+  novascale-codex notification-status
+  novascale-codex notification-restart
+  novascale-codex notification-stop
   novascale-codex print-pairing [--no-qr]
   novascale-codex rotate-token
-  novascale-codex uninstall [--keep-token|--delete-token]
+  novascale-codex uninstall [--keep-token|--delete-token] [--keep-agent-state|--delete-agent-state]
 EOF
 }
 
@@ -673,6 +1010,9 @@ case "$cmd" in
   status) status_service ;;
   restart) restart_service ;;
   stop) stop_service ;;
+  notification-status) status_notification_service ;;
+  notification-restart) restart_notification_service ;;
+  notification-stop) stop_notification_service ;;
   print-pairing)
     while [ "$#" -gt 0 ]; do
       case "$1" in
@@ -836,6 +1176,35 @@ while [ "$#" -gt 0 ]; do
       assume_yes=1
       shift
       ;;
+    --enable-notifications)
+      notification_requested=1
+      shift
+      ;;
+    --notification-endpoint)
+      [ "$#" -ge 2 ] || die "--notification-endpoint requires a value"
+      notification_endpoint="$2"
+      notification_requested=1
+      shift 2
+      ;;
+    --dev-agent)
+      dev_agent=1
+      notification_requested=1
+      shift
+      ;;
+    --agent-binary)
+      [ "$#" -ge 2 ] || die "--agent-binary requires a value"
+      agent_binary_source="$2"
+      notification_requested=1
+      shift 2
+      ;;
+    --no-hook-install)
+      no_hook_install=1
+      shift
+      ;;
+    --no-notifications)
+      notification_disabled=1
+      shift
+      ;;
     --help|-h)
       usage
       exit 0
@@ -845,6 +1214,10 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+if [ "$notification_requested" -eq 1 ] && [ "$notification_disabled" -eq 1 ]; then
+  die "--no-notifications cannot be combined with notification setup options"
+fi
 
 if [ "$print_only" -eq 1 ]; then
   load_existing_config
@@ -866,6 +1239,7 @@ codex_dir="$(dirname "$codex_bin")"
 PATH="${codex_dir}:$PATH"
 export PATH
 
+preflight_notification_agent
 confirm_reconfigure_existing_setup
 
 tailscale_ip="$(detect_tailscale_ip || true)"
@@ -888,6 +1262,7 @@ ensure_token
 write_config
 install_helper
 install_service
+configure_notification_agent
 cleanup_legacy_files
 print_pairing
 
@@ -896,3 +1271,7 @@ notice "Configured ${APP_NAME} host service."
 notice "Listen: ws://${listen}:${port}"
 notice "Pairing host: ${host}:${port}"
 notice "Helper: ${HELPER_PATH}"
+if [ "$notification_disabled" -eq 0 ] && { [ "$notification_requested" -eq 1 ] || [ -f "$AGENT_CONFIG_FILE" ]; }; then
+  notice "Notification agent: ${AGENT_PATH}"
+  notice "Codex hook trust: review NovaScale handlers with /hooks in Codex CLI."
+fi

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>dev.galaxnet.novascale.agent</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>__HOME__/.local/bin/novascale-agent</string>
+      <string>serve</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardOutPath</key>
+    <string>__HOME__/.local/state/novascale-agent/agent.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/.local/state/novascale-agent/agent.err.log</string>
+  </dict>
+</plist>
