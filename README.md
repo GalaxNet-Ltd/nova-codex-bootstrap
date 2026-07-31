@@ -168,14 +168,25 @@ daemon when the live version or binary is stale, after the binary, hooks, and
 service definition are ready. The durable queue survives this restart, and the
 Codex App Server wrapper is not restarted by the notification upgrade check.
 
-For first enrollment, pass the backend URL. The agent creates its host identity
-locally and signs the registration request:
+For first enrollment, the app obtains a short-lived, single-use setup token and
+writes it to a temporary `0600` file. Pass that protected file and the backend
+URL. Bootstrap creates the host identity and stages enrollment locally; it does
+not wait on a registration network request:
 
 ```sh
 ./setup.sh --yes --enable-notifications \
   --dev-agent \
-  --notification-endpoint https://<NOTIFICATION_ENDPOINT>
+  --notification-endpoint https://<NOTIFICATION_ENDPOINT> \
+  --notification-setup-token-file /path/to/protected/setup-token
 ```
+
+The daemon keeps a protected `0600` copy outside its config, key file, queue,
+and service definition while registration is pending. It proves possession of
+the host private key, sends the token only as registration authorization,
+retries transient failures across restarts, and removes the copy after success
+or permanent rejection. The caller-owned temporary file can be deleted as
+soon as bootstrap has staged it. Redeploying an active host preserves its
+identity; redeploying a pending host continues the existing attempt.
 
 Notification endpoints must use HTTPS. Plain HTTP is accepted only for
 loopback development through `localhost`, `127.0.0.0/8`, or `::1`.

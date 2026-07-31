@@ -8,12 +8,14 @@ import (
 )
 
 type Paths struct {
-	ConfigDir  string
-	StateDir   string
-	ConfigFile string
-	KeyFile    string
-	Database   string
-	Socket     string
+	ConfigDir      string
+	StateDir       string
+	ConfigFile     string
+	KeyFile        string
+	SetupTokenFile string
+	EnrollmentLock string
+	Database       string
+	Socket         string
 }
 
 func DefaultPaths() (Paths, error) {
@@ -32,14 +34,22 @@ func DefaultPaths() (Paths, error) {
 	configDir := filepath.Join(configBase, "novascale-agent")
 	stateDir := filepath.Join(stateBase, "novascale-agent")
 	return Paths{
-		ConfigDir:  configDir,
-		StateDir:   stateDir,
-		ConfigFile: filepath.Join(configDir, "config.json"),
-		KeyFile:    filepath.Join(configDir, "host-key"),
-		Database:   filepath.Join(stateDir, "agent.db"),
-		Socket:     filepath.Join(stateDir, "agent.sock"),
+		ConfigDir:      configDir,
+		StateDir:       stateDir,
+		ConfigFile:     filepath.Join(configDir, "config.json"),
+		KeyFile:        filepath.Join(configDir, "host-key"),
+		SetupTokenFile: filepath.Join(configDir, "pending-setup-token"),
+		EnrollmentLock: filepath.Join(configDir, "enrollment.lock"),
+		Database:       filepath.Join(stateDir, "agent.db"),
+		Socket:         filepath.Join(stateDir, "agent.sock"),
 	}, nil
 }
+
+const (
+	RegistrationPending         = "pending"
+	RegistrationActive          = "active"
+	RegistrationNeedsSetupToken = "needs_setup_token"
+)
 
 type Config struct {
 	Version           int    `json:"version"`
@@ -57,16 +67,31 @@ func LoadConfig(path string) (Config, error) {
 	if err := json.Unmarshal(data, &config); err != nil {
 		return Config{}, err
 	}
-	if config.Version != 1 || config.HostID == "" || config.Endpoint == "" {
-		return Config{}, errors.New("invalid agent configuration")
-	}
-	if _, err := parseNotificationEndpoint(config.Endpoint); err != nil {
-		return Config{}, errors.New("invalid notification endpoint in agent configuration")
+	if err := ValidateConfig(config); err != nil {
+		return Config{}, err
 	}
 	return config, nil
 }
 
+func ValidateConfig(config Config) error {
+	if config.Version != 1 || config.HostID == "" || config.Endpoint == "" {
+		return errors.New("invalid agent configuration")
+	}
+	switch config.RegistrationState {
+	case RegistrationPending, RegistrationActive, RegistrationNeedsSetupToken:
+	default:
+		return errors.New("invalid agent registration state")
+	}
+	if _, err := parseNotificationEndpoint(config.Endpoint); err != nil {
+		return errors.New("invalid notification endpoint in agent configuration")
+	}
+	return nil
+}
+
 func SaveConfig(path string, config Config) error {
+	if err := ValidateConfig(config); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}

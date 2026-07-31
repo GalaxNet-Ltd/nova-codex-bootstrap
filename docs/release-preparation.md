@@ -44,12 +44,16 @@ locally and keep the development flag explicit:
 ```sh
 notifications/scripts/build-agent-release.sh
 ./setup.sh --enable-notifications --dev-agent \
-  --notification-endpoint https://<NOTIFICATION_ENDPOINT>
+  --notification-endpoint https://<NOTIFICATION_ENDPOINT> \
+  --notification-setup-token-file /path/to/protected/setup-token
 ```
 
 Verify both hook events, neutral `{}` output, queue retry across a temporary
-endpoint outage, reboot persistence, and preservation of unrelated hooks. Host
-registration must prove possession of the locally generated signing key.
+endpoint outage, enrollment retry across a daemon restart, removal of the
+agent-owned pending token after enrollment, reboot persistence, and
+preservation of unrelated hooks. Bootstrap must only stage enrollment; the
+daemon performs the signed registration and proves possession of the locally
+generated signing key.
 
 ## Source publication gate
 
@@ -121,10 +125,15 @@ Keep `--dev-agent` available only as an explicit developer path.
 
 ## Rollout order
 
+Deploy backend setup-token support before enabling fresh notification
+enrollment in the app. That backend change does not alter authentication for
+already-enrolled hosts sending signed events.
+
 1. Publish the backward-compatible wrapper and agent source.
 2. Validate default bootstrap with an existing app release.
 3. Publish a signed host-agent prerelease.
-4. Validate opt-in enrollment and lifecycle notifications with a test app.
+4. Validate app-issued, single-use setup-token enrollment and lifecycle
+   notifications with a test app.
 5. Release updated app support while keeping notifications opt-in per host.
 
 If notification rollout is paused, wrapper access must remain usable. Stopping

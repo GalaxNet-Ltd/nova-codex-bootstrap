@@ -40,6 +40,14 @@ agent、修改 Codex hooks，也不需要通知後端。包含目前 App Store �
 `--enable-notifications --dev-agent` 才會啟用；未來的簽署發行版也不會
 在未告知使用者的情況下改變既有安裝。
 
+通知 agent 的首次註冊還需要由 App/後端簽發、短效且只能使用一次的
+setup token。token 必須放在受保護的 `0600` 暫存檔，並透過
+`--notification-setup-token-file` 傳入。bootstrap 只會將註冊工作與
+token 暫存到 agent 自己的 `0600` 檔案，不執行網路註冊；呼叫端之後即可
+刪除原暫存檔。agent daemon 會在背景註冊、對暫時性失敗自動重試，並在
+成功或永久拒絕後刪除自己的 token 檔案。重新部署已註冊或仍在註冊的主機
+會保留原有身分。
+
 ## 進階子網模式
 
 僅當主機位於 Tailscale 子網路由後方，或位於可信任的私有網路中時，才使用 `0.0.0.0`：

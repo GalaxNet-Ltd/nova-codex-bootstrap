@@ -23,7 +23,26 @@ type RegisterRequest struct {
 	AgentVersion string `json:"agentVersion"`
 }
 
-func RegisterHost(ctx context.Context, client *http.Client, endpoint, hostID string, privateKey ed25519.PrivateKey, version string, now time.Time) error {
+type RegistrationError struct {
+	StatusCode int
+}
+
+func (e *RegistrationError) Error() string {
+	return "host registration rejected with HTTP status " + strconv.Itoa(e.StatusCode)
+}
+
+func (e *RegistrationError) Permanent() bool {
+	switch e.StatusCode {
+	case http.StatusRequestTimeout, http.StatusTooEarly, http.StatusTooManyRequests:
+		return false
+	}
+	return e.StatusCode >= 300 && e.StatusCode < 500
+}
+
+func RegisterHost(ctx context.Context, client *http.Client, endpoint, setupToken, hostID string, privateKey ed25519.PrivateKey, version string, now time.Time) error {
+	if !validSetupToken(setupToken) {
+		return errors.New("invalid setup token")
+	}
 	base, err := parseNotificationEndpoint(endpoint)
 	if err != nil {
 		return err
@@ -42,6 +61,7 @@ func RegisterHost(ctx context.Context, client *http.Client, endpoint, hostID str
 		return err
 	}
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+setupToken)
 	request.Header.Set("X-NovaScale-Timestamp", strconv.FormatInt(now.Unix(), 10))
 	request.Header.Set("X-NovaScale-Signature", signing.Sign(privateKey, now.Unix(), registrationSignatureID(hostID), body))
 	response, err := client.Do(request)
@@ -50,7 +70,7 @@ func RegisterHost(ctx context.Context, client *http.Client, endpoint, hostID str
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return errors.New("host registration rejected: " + response.Status)
+		return &RegistrationError{StatusCode: response.StatusCode}
 	}
 	return nil
 }

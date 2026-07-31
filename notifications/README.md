@@ -64,9 +64,12 @@ events are removed. It contains no APNs device token or Codex session content.
 ## Commands
 
 ```sh
-novascale-agent init --endpoint <HTTPS_URL>
+novascale-agent init \
+  --endpoint <HTTPS_URL> \
+  --setup-token-file /path/to/protected/setup-token
 novascale-agent serve
 novascale-agent status
+novascale-agent registration-state
 novascale-agent daemon-version
 novascale-agent hooks install
 novascale-agent hooks status
@@ -75,6 +78,16 @@ novascale-agent app-server restart
 ```
 
 Notification endpoints must use HTTPS outside explicit loopback development.
+The setup-token file must be a regular `0400` or `0600` file containing the
+short-lived, single-use token issued for this installation. `init` performs no
+network request: it copies the token to
+`~/.config/novascale-agent/pending-setup-token` with mode `0600` and records a
+pending enrollment. The caller may then remove its input file. `serve` owns
+registration and retries transient failures with backoff across daemon
+restarts. It removes the agent-owned token after success or permanent
+rejection. A rejected or missing token leaves the state as
+`needs_setup_token`, and rerunning `init` with a new token resumes enrollment.
+Normal redeploys preserve active and pending host identities.
 
 `daemon-version` queries the live process over the same private, same-user IPC
 socket used by hooks. Bootstrap uses it to restart the notification service

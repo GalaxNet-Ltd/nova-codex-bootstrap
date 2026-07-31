@@ -1,9 +1,11 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -129,8 +131,190 @@ func TestDaemonReportsLiveVersionAndQueueDepth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Version != "1.2.3-test" || info.QueueDepth != 1 {
+	if info.Version != "1.2.3-test" || info.QueueDepth != 1 || info.RegistrationState != RegistrationActive {
 		t.Fatalf("daemon info = %+v", info)
+	}
+}
+
+func TestDaemonEnrollmentRetriesThenReleasesQueuedEvents(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory, err := os.MkdirTemp("/tmp", "novascale-enrollment-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(directory) })
+	configPath := filepath.Join(directory, "config.json")
+	tokenPath := filepath.Join(directory, "pending-setup-token")
+	socketPath := filepath.Join(directory, "agent.sock")
+	config := Config{
+		Version: 1, HostID: "host-1", Endpoint: "https://notify.test",
+		RegistrationState: RegistrationPending,
+	}
+	if err := SaveConfig(configPath, config); err != nil {
+		t.Fatal(err)
+	}
+	token := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{4}, 32))
+	if err := os.WriteFile(tokenPath, []byte(token+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	queue, err := OpenQueue(filepath.Join(directory, "agent.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer queue.Close()
+	eventBody, err := json.Marshal(protocol.HostEvent{
+		SchemaVersion: 1, EventType: protocol.EventTurnStopped,
+		ThreadID: "thread-1", TurnID: "turn-1", OccurredAt: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.Enqueue(context.Background(), "event-1", eventBody, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	var registrationAttempts int
+	eventUploaded := make(chan struct{}, 1)
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch request.URL.Path {
+		case "/v1/hosts/register":
+			registrationAttempts++
+			if request.Header.Get("Authorization") != "Bearer "+token {
+				t.Error("registration did not use the staged setup token")
+			}
+			if registrationAttempts == 1 {
+				return testResponse(http.StatusServiceUnavailable, "503 Service Unavailable"), nil
+			}
+			return testResponse(http.StatusCreated, "201 Created"), nil
+		case "/v1/host-events":
+			timestamp, parseErr := strconv.ParseInt(request.Header.Get("X-NovaScale-Timestamp"), 10, 64)
+			if parseErr != nil || signing.Verify(publicKey, timestamp, request.Header.Get("X-NovaScale-Event-ID"), eventBody, request.Header.Get("X-NovaScale-Signature")) != nil {
+				t.Error("queued event signature was invalid")
+			}
+			select {
+			case eventUploaded <- struct{}{}:
+			default:
+			}
+			return testResponse(http.StatusAccepted, "202 Accepted"), nil
+		default:
+			t.Errorf("unexpected request path %q", request.URL.Path)
+			return testResponse(http.StatusNotFound, "404 Not Found"), nil
+		}
+	})}
+	daemon := &Daemon{
+		Config: config, ConfigPath: configPath, SetupTokenPath: tokenPath,
+		PrivateKey: privateKey, Queue: queue, SocketPath: socketPath,
+		Version: "test", Client: client,
+		enrollmentPoll: 5 * time.Millisecond, enrollmentMin: 5 * time.Millisecond,
+		enrollmentMax: 10 * time.Millisecond,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- daemon.Run(ctx) }()
+	select {
+	case <-eventUploaded:
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatal("daemon did not enroll and release its queued event")
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if registrationAttempts < 2 {
+		t.Fatalf("registration attempts = %d, want at least 2", registrationAttempts)
+	}
+	saved, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.RegistrationState != RegistrationActive {
+		t.Fatalf("registration state = %q, want active", saved.RegistrationState)
+	}
+	if _, err := os.Stat(tokenPath); !os.IsNotExist(err) {
+		t.Fatalf("pending setup token still exists after enrollment: %v", err)
+	}
+}
+
+func TestDaemonEnrollmentSurvivesRestartAndRejectsPermanentFailure(t *testing.T) {
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "config.json")
+	tokenPath := filepath.Join(directory, "pending-setup-token")
+	config := Config{
+		Version: 1, HostID: "host-1", Endpoint: "https://notify.test",
+		RegistrationState: RegistrationPending,
+	}
+	if err := SaveConfig(configPath, config); err != nil {
+		t.Fatal(err)
+	}
+	token := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{5}, 32))
+	if err := os.WriteFile(tokenPath, []byte(token+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	transient := &Daemon{
+		Config: config, ConfigPath: configPath, SetupTokenPath: tokenPath,
+		PrivateKey: privateKey, Version: "test", now: time.Now,
+		Client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return testResponse(http.StatusBadGateway, "502 Bad Gateway"), nil
+		})},
+	}
+	if result := transient.attemptEnrollment(context.Background()); result != enrollmentRetry {
+		t.Fatalf("transient enrollment result = %v, want retry", result)
+	}
+	if _, err := os.Stat(tokenPath); err != nil {
+		t.Fatalf("transient failure removed pending token: %v", err)
+	}
+
+	saved, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed := &Daemon{
+		Config: saved, ConfigPath: configPath, SetupTokenPath: tokenPath,
+		PrivateKey: privateKey, Version: "test", now: time.Now,
+		Client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return testResponse(http.StatusCreated, "201 Created"), nil
+		})},
+	}
+	if result := resumed.attemptEnrollment(context.Background()); result != enrollmentSucceeded {
+		t.Fatalf("resumed enrollment result = %v, want success", result)
+	}
+
+	rejectionTokenPath := filepath.Join(directory, "rejected-setup-token")
+	if err := os.WriteFile(rejectionTokenPath, []byte(token+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rejectedConfig := saved
+	rejectedConfig.RegistrationState = RegistrationPending
+	if err := SaveConfig(configPath, rejectedConfig); err != nil {
+		t.Fatal(err)
+	}
+	rejected := &Daemon{
+		Config: rejectedConfig, ConfigPath: configPath, SetupTokenPath: rejectionTokenPath,
+		PrivateKey: privateKey, Version: "test", now: time.Now,
+		Client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return testResponse(http.StatusUnauthorized, "401 Unauthorized"), nil
+		})},
+	}
+	if result := rejected.attemptEnrollment(context.Background()); result != enrollmentWaiting {
+		t.Fatalf("rejected enrollment result = %v, want waiting", result)
+	}
+	rejectedSaved, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rejectedSaved.RegistrationState != RegistrationNeedsSetupToken {
+		t.Fatalf("rejected registration state = %q", rejectedSaved.RegistrationState)
+	}
+	if _, err := os.Stat(rejectionTokenPath); !os.IsNotExist(err) {
+		t.Fatalf("rejected setup token still exists: %v", err)
 	}
 }
 

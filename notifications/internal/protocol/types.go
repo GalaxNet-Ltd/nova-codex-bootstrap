@@ -46,7 +46,8 @@ type DaemonInfoRequest struct {
 }
 
 type DaemonInfoResponse struct {
-	Version    string `json:"version,omitempty"`
-	QueueDepth int    `json:"queueDepth,omitempty"`
-	Error      string `json:"error,omitempty"`
+	Version           string `json:"version,omitempty"`
+	QueueDepth        int    `json:"queueDepth,omitempty"`
+	RegistrationState string `json:"registrationState,omitempty"`
+	Error             string `json:"error,omitempty"`
 }

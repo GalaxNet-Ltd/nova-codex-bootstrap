@@ -20,6 +20,7 @@ func TestRegisterHostProvesPrivateKeyPossession(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 7, 16, 3, 0, 0, 0, time.UTC)
+	setupToken := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		body, err := io.ReadAll(request.Body)
 		if err != nil {
@@ -33,8 +34,8 @@ func TestRegisterHostProvesPrivateKeyPossession(t *testing.T) {
 		if registration.HostID != "host-1" || registration.PublicKey != base64.RawURLEncoding.EncodeToString(publicKey) {
 			t.Errorf("unexpected registration: %+v", registration)
 		}
-		if request.Header.Get("Authorization") != "" {
-			t.Error("registration unexpectedly sent bearer authorization")
+		if request.Header.Get("Authorization") != "Bearer "+setupToken {
+			t.Error("registration did not send the setup token as bearer authorization")
 		}
 		if err := signing.Verify(publicKey, now.Unix(), registrationSignatureID(registration.HostID), body, request.Header.Get("X-NovaScale-Signature")); err != nil {
 			t.Errorf("registration signature failed: %v", err)
@@ -42,7 +43,7 @@ func TestRegisterHostProvesPrivateKeyPossession(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusCreated, Status: "201 Created", Body: http.NoBody, Header: make(http.Header)}, nil
 	})}
 
-	if err := RegisterHost(context.Background(), client, "https://notify.example.com", "host-1", privateKey, "test", now); err != nil {
+	if err := RegisterHost(context.Background(), client, "https://notify.example.com", setupToken, "host-1", privateKey, "test", now); err != nil {
 		t.Fatal(err)
 	}
 }

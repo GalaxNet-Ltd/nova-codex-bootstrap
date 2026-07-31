@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -40,6 +39,8 @@ func main() {
 		err = runServe(os.Args[2:])
 	case "status":
 		err = runStatus(os.Args[2:])
+	case "registration-state":
+		err = runRegistrationState(os.Args[2:])
 	case "daemon-version":
 		err = runDaemonVersion(os.Args[2:])
 	case "app-server":
@@ -186,50 +187,62 @@ func runInit(arguments []string) error {
 		return err
 	}
 	flags := flag.NewFlagSet("init", flag.ContinueOnError)
-	endpoint := flags.String("endpoint", "http://127.0.0.1:8080", "notification endpoint")
+	endpoint := flags.String("endpoint", "", "notification endpoint (required for a new identity)")
+	setupTokenFile := flags.String("setup-token-file", "", "protected file containing a single-use setup token")
 	if err := flags.Parse(arguments); err != nil {
 		return err
 	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("init takes no positional arguments")
+	}
+	unlock, err := agent.LockEnrollment(paths.EnrollmentLock)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	var config agent.Config
-	var privateKey ed25519.PrivateKey
 	if existing, loadErr := agent.LoadConfig(paths.ConfigFile); loadErr == nil {
-		if existing.RegistrationState == "active" {
+		if existing.RegistrationState == agent.RegistrationActive {
 			return fmt.Errorf("agent is already initialized")
 		}
-		loadedPrivateKey, keyErr := agent.LoadPrivateKey(paths.KeyFile)
-		if keyErr != nil {
+		if _, keyErr := agent.LoadPrivateKey(paths.KeyFile); keyErr != nil {
 			return fmt.Errorf("resume pending registration: %w", keyErr)
 		}
 		config = existing
-		config.Endpoint = *endpoint
-		privateKey = loadedPrivateKey
+		if *endpoint != "" {
+			config.Endpoint = *endpoint
+		}
+		config.RegistrationState = agent.RegistrationPending
 	} else if !os.IsNotExist(loadErr) {
 		return loadErr
 	} else {
+		if *endpoint == "" {
+			return fmt.Errorf("--endpoint is required for a new agent identity")
+		}
 		hostID, newErr := agent.NewUUID()
 		if newErr != nil {
 			return newErr
 		}
-		_, generatedPrivateKey, newErr := agent.GenerateIdentity(paths.KeyFile)
+		_, _, newErr = agent.GenerateIdentity(paths.KeyFile)
 		if newErr != nil {
 			return newErr
 		}
-		privateKey = generatedPrivateKey
-		config = agent.Config{Version: 1, HostID: hostID, Endpoint: *endpoint, RegistrationState: "pending"}
-		if err := agent.SaveConfig(paths.ConfigFile, config); err != nil {
-			return err
+		config = agent.Config{
+			Version: 1, HostID: hostID, Endpoint: *endpoint,
+			RegistrationState: agent.RegistrationPending,
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if err := agent.RegisterHost(ctx, &http.Client{Timeout: 10 * time.Second}, *endpoint, config.HostID, privateKey, version, time.Now()); err != nil {
+	if err := agent.ValidateConfig(config); err != nil {
 		return err
 	}
-	config.RegistrationState = "active"
+	if err := agent.StageSetupToken(*setupTokenFile, paths.SetupTokenFile); err != nil {
+		return err
+	}
 	if err := agent.SaveConfig(paths.ConfigFile, config); err != nil {
 		return err
 	}
-	fmt.Println("NovaScale notification host registered:", config.HostID)
+	fmt.Println("NovaScale notification enrollment staged:", config.HostID)
+	fmt.Println("The agent daemon will enroll this host in the background.")
 	return nil
 }
 
@@ -265,7 +278,9 @@ func runServe(arguments []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	daemon := agent.Daemon{
-		Config: config, PrivateKey: ed25519.PrivateKey(privateKey), Queue: queue,
+		Config: config, ConfigPath: paths.ConfigFile, SetupTokenPath: paths.SetupTokenFile,
+		EnrollmentLock: paths.EnrollmentLock,
+		PrivateKey:     ed25519.PrivateKey(privateKey), Queue: queue,
 		SocketPath: *socket, Version: version,
 	}
 	return daemon.Run(ctx)
@@ -330,12 +345,29 @@ func runStatus(arguments []string) error {
 	if info, err := agent.ReadDaemonInfo(ctx, paths.Socket); err == nil {
 		fmt.Println("Live version: ", info.Version)
 		fmt.Println("Live queue:   ", info.QueueDepth)
+		fmt.Println("Live registration:", info.RegistrationState)
 	} else {
 		fmt.Println("Live version:  unavailable")
 	}
 	return nil
 }
 
+func runRegistrationState(arguments []string) error {
+	paths, err := agent.DefaultPaths()
+	if err != nil {
+		return err
+	}
+	if len(arguments) != 0 {
+		return fmt.Errorf("registration-state takes no arguments")
+	}
+	config, err := agent.LoadConfig(paths.ConfigFile)
+	if err != nil {
+		return err
+	}
+	fmt.Println(config.RegistrationState)
+	return nil
+}
+
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: novascale-agent <init|serve|hook|status|daemon-version|hooks|app-server|version>")
+	fmt.Fprintln(os.Stderr, "usage: novascale-agent <init|serve|hook|status|registration-state|daemon-version|hooks|app-server|version>")
 }

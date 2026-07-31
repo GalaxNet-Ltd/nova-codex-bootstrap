@@ -22,26 +22,25 @@ import (
 )
 
 type Daemon struct {
-	Config     Config
-	PrivateKey ed25519.PrivateKey
-	Queue      *Queue
-	SocketPath string
-	Version    string
-	Client     *http.Client
-	now        func() time.Time
-	wake       chan struct{}
+	Config         Config
+	ConfigPath     string
+	SetupTokenPath string
+	EnrollmentLock string
+	PrivateKey     ed25519.PrivateKey
+	Queue          *Queue
+	SocketPath     string
+	Version        string
+	Client         *http.Client
+	now            func() time.Time
+	wake           chan struct{}
+	configMu       sync.RWMutex
+	enrollmentPoll time.Duration
+	enrollmentMin  time.Duration
+	enrollmentMax  time.Duration
 }
 
 func (d *Daemon) Run(ctx context.Context) error {
-	if d.now == nil {
-		d.now = time.Now
-	}
-	if d.Client == nil {
-		d.Client = DefaultHTTPClient()
-	}
-	if d.wake == nil {
-		d.wake = make(chan struct{}, 1)
-	}
+	d.setDefaults()
 	listener, err := ListenIPC(d.SocketPath)
 	if err != nil {
 		return err
@@ -49,10 +48,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 	defer listener.Close()
 
 	var workers sync.WaitGroup
-	workers.Add(1)
+	workers.Add(2)
 	go func() {
 		defer workers.Done()
 		d.uploadLoop(ctx)
+	}()
+	go func() {
+		defer workers.Done()
+		d.enrollmentLoop(ctx)
 	}()
 	defer workers.Wait()
 
@@ -94,8 +97,9 @@ func (d *Daemon) handleConnection(ctx context.Context, connection net.Conn) {
 			return
 		}
 		_ = json.NewEncoder(connection).Encode(protocol.DaemonInfoResponse{
-			Version:    d.Version,
-			QueueDepth: depth,
+			Version:           d.Version,
+			QueueDepth:        depth,
+			RegistrationState: d.configSnapshot().RegistrationState,
 		})
 		return
 	}
@@ -149,7 +153,7 @@ func (d *Daemon) eventID(event protocol.HookEvent) (string, error) {
 	if event.RequestID == "" {
 		return NewUUID()
 	}
-	canonical := strings.Join([]string{d.Config.HostID, string(event.EventType), event.ThreadID, event.TurnID, event.RequestID}, "\n")
+	canonical := strings.Join([]string{d.configSnapshot().HostID, string(event.EventType), event.ThreadID, event.TurnID, event.RequestID}, "\n")
 	hash := sha256.Sum256([]byte(canonical))
 	return hex.EncodeToString(hash[:]), nil
 }
@@ -170,6 +174,9 @@ func (d *Daemon) uploadLoop(ctx context.Context) {
 
 func (d *Daemon) uploadDue(ctx context.Context) {
 	for ctx.Err() == nil {
+		if d.configSnapshot().RegistrationState != RegistrationActive {
+			return
+		}
 		event, err := d.Queue.Next(ctx, d.now())
 		if errors.Is(err, sql.ErrNoRows) || err != nil {
 			return
@@ -186,7 +193,8 @@ func (d *Daemon) uploadDue(ctx context.Context) {
 }
 
 func (d *Daemon) upload(ctx context.Context, event QueuedEvent) error {
-	endpoint, err := parseNotificationEndpoint(d.Config.Endpoint)
+	config := d.configSnapshot()
+	endpoint, err := parseNotificationEndpoint(config.Endpoint)
 	if err != nil {
 		return err
 	}
@@ -197,7 +205,7 @@ func (d *Daemon) upload(ctx context.Context, event QueuedEvent) error {
 		return err
 	}
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-NovaScale-Host", d.Config.HostID)
+	request.Header.Set("X-NovaScale-Host", config.HostID)
 	request.Header.Set("X-NovaScale-Timestamp", strconv.FormatInt(timestamp, 10))
 	request.Header.Set("X-NovaScale-Event-ID", event.EventID)
 	request.Header.Set("X-NovaScale-Signature", signing.Sign(d.PrivateKey, timestamp, event.EventID, event.Body))

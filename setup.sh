@@ -16,6 +16,7 @@ HELPER_PATH="${HELPER_DIR}/novascale-codex"
 AGENT_PATH="${HELPER_DIR}/novascale-agent"
 AGENT_CONFIG_DIR="${HOME}/.config/novascale-agent"
 AGENT_CONFIG_FILE="${AGENT_CONFIG_DIR}/config.json"
+AGENT_SETUP_TOKEN_FILE="${AGENT_CONFIG_DIR}/pending-setup-token"
 AGENT_STATE_DIR="${HOME}/.local/state/novascale-agent"
 CODEX_HOOKS_FILE="${CONFIG_DIR}/hooks.json"
 LEGACY_SERVICE_LABEL="dev.galaxnet.novaaccess.codex"
@@ -46,6 +47,7 @@ assume_yes=0
 notification_requested=0
 notification_disabled=0
 notification_endpoint=""
+notification_setup_token_file=""
 no_hook_install=0
 
 usage() {
@@ -69,6 +71,9 @@ Options:
                         Install and configure the notification agent.
   --notification-endpoint <url>
                         Notification backend URL used for first enrollment.
+  --notification-setup-token-file <path>
+                        Protected 0400/0600 file containing the single-use
+                        token staged for daemon-owned enrollment.
   --dev-agent           Install an unsigned local agent build from notifications/dist.
   --agent-binary <path> Install this prebuilt novascale-agent binary.
   --no-hook-install     Install the agent without modifying Codex hooks.json.
@@ -575,14 +580,35 @@ prepare_agent_upgrade() {
   fi
 }
 
-enroll_notification_agent() {
+stage_notification_agent_enrollment() {
   if [ -f "$AGENT_CONFIG_FILE" ]; then
-    notice "Existing notification-agent identity detected; preserving its host ID and private key."
-    "$AGENT_PATH" status >/dev/null
+    registration_state="$("$AGENT_PATH" registration-state)"
+    if [ "$registration_state" = "active" ]; then
+      notice "Existing active notification-agent identity detected; preserving its host ID and private key."
+      return 0
+    fi
+    if [ -z "$notification_setup_token_file" ]; then
+      if [ "$registration_state" = "pending" ] && [ -f "$AGENT_SETUP_TOKEN_FILE" ]; then
+        "$AGENT_PATH" init --setup-token-file "$AGENT_SETUP_TOKEN_FILE" >/dev/null
+        notice "Existing notification enrollment is pending; the daemon will continue retrying it."
+        return 0
+      fi
+      die "Notification enrollment needs a new --notification-setup-token-file"
+    fi
+    if [ -n "$notification_endpoint" ]; then
+      "$AGENT_PATH" init \
+        --endpoint "$notification_endpoint" \
+        --setup-token-file "$notification_setup_token_file"
+    else
+      "$AGENT_PATH" init --setup-token-file "$notification_setup_token_file"
+    fi
     return 0
   fi
   [ -n "$notification_endpoint" ] || die "--notification-endpoint is required for first notification-agent enrollment"
-  "$AGENT_PATH" init --endpoint "$notification_endpoint"
+  [ -n "$notification_setup_token_file" ] || die "--notification-setup-token-file is required for first notification-agent enrollment"
+  "$AGENT_PATH" init \
+    --endpoint "$notification_endpoint" \
+    --setup-token-file "$notification_setup_token_file"
 }
 
 install_agent_hooks() {
@@ -700,10 +726,15 @@ configure_notification_agent() {
   fi
   prepare_agent_upgrade "$source_path"
   install_agent_binary "$source_path"
-  enroll_notification_agent
+  stage_notification_agent_enrollment
   migrate_development_agent_hooks "$source_path"
   install_agent_hooks
   install_agent_service
+  if [ "$no_start" -eq 1 ]; then
+    notice "Notification enrollment is staged; it will begin when the agent daemon starts."
+  elif [ "$("$AGENT_PATH" registration-state)" != "active" ]; then
+    notice "Notification enrollment is running in the agent daemon and will retry automatically."
+  fi
 }
 
 preflight_notification_agent() {
@@ -715,6 +746,16 @@ preflight_notification_agent() {
   [ -n "$source_path" ] || die "No installed notification agent found. Until signed releases are available, build locally and pass --dev-agent or --agent-binary <path>."
   if [ ! -f "$AGENT_CONFIG_FILE" ]; then
     [ -n "$notification_endpoint" ] || die "--notification-endpoint is required for first notification-agent enrollment"
+    [ -n "$notification_setup_token_file" ] || die "--notification-setup-token-file is required for first notification-agent enrollment"
+    [ -f "$notification_setup_token_file" ] || die "Notification setup-token file does not exist"
+  elif [ -n "$notification_setup_token_file" ]; then
+    [ -f "$notification_setup_token_file" ] || die "Notification setup-token file does not exist"
+  else
+    registration_state="$("$source_path" registration-state 2>/dev/null || true)"
+    if [ "$registration_state" = "needs_setup_token" ] || \
+       { [ "$registration_state" = "pending" ] && [ ! -f "$AGENT_SETUP_TOKEN_FILE" ]; }; then
+      die "Notification enrollment needs a new --notification-setup-token-file"
+    fi
   fi
 }
 
@@ -1183,6 +1224,12 @@ while [ "$#" -gt 0 ]; do
     --notification-endpoint)
       [ "$#" -ge 2 ] || die "--notification-endpoint requires a value"
       notification_endpoint="$2"
+      notification_requested=1
+      shift 2
+      ;;
+    --notification-setup-token-file)
+      [ "$#" -ge 2 ] || die "--notification-setup-token-file requires a value"
+      notification_setup_token_file="$2"
       notification_requested=1
       shift 2
       ;;

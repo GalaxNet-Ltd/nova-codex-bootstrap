@@ -111,6 +111,128 @@ grep -q -- '--notification-endpoint is required' "$temporary_root/gated-error"
 test ! -e "$gated_home/.codex/novascale-codex-host.env"
 test ! -e "$gated_home/.local/bin/novascale-agent"
 
+token_gated_home="$temporary_root/token-gated-home"
+mkdir -p "$token_gated_home"
+if HOME="$token_gated_home" PATH="$test_path" "$root_dir/setup.sh" \
+  --listen 127.0.0.1 \
+  --host 127.0.0.1 \
+  --port "$((test_port + 2))" \
+  --no-start \
+  --no-qr \
+  --enable-notifications \
+  --notification-endpoint http://127.0.0.1:8080 \
+  --agent-binary "$true_binary" \
+  >"$temporary_root/token-gated-output" \
+  2>"$temporary_root/token-gated-error"
+then
+  printf 'notification setup unexpectedly succeeded without a setup-token file\n' >&2
+  exit 1
+fi
+grep -q -- '--notification-setup-token-file is required' "$temporary_root/token-gated-error"
+test ! -e "$token_gated_home/.codex/novascale-codex-host.env"
+test ! -e "$token_gated_home/.local/bin/novascale-agent"
+
+enrollment_home="$temporary_root/enrollment-home"
+enrollment_agent="$temporary_root/enrollment-agent"
+enrollment_log="$temporary_root/enrollment-agent.log"
+setup_token_file="$temporary_root/setup-token"
+mkdir -p "$enrollment_home"
+setup_token="$(printf '%043d' 0)"
+printf '%s\n' "$setup_token" >"$setup_token_file"
+chmod 600 "$setup_token_file"
+cat >"$enrollment_agent" <<'EOF'
+#!/bin/sh
+set -eu
+case "${1:-}" in
+  version)
+    printf '%s\n' '1.0.0-enrollment-test'
+    ;;
+  init)
+    shift
+    if [ "$#" -eq 4 ]; then
+      [ "${1:-}" = "--endpoint" ]
+      [ "${2:-}" = "http://127.0.0.1:8080" ]
+      [ "${3:-}" = "--setup-token-file" ]
+      [ -f "${4:-}" ]
+      printf 'init endpoint and setup-token path received\n' >>"$NOVASCALE_TEST_AGENT_LOG"
+      mkdir -p "$HOME/.config/novascale-agent"
+      cp "${4:-}" "$HOME/.config/novascale-agent/pending-setup-token"
+      chmod 600 "$HOME/.config/novascale-agent/pending-setup-token"
+      printf '%s\n' '{"version":1,"hostId":"host-test","endpoint":"http://127.0.0.1:8080","registrationState":"pending"}' \
+        >"$HOME/.config/novascale-agent/config.json"
+    else
+      [ "$#" -eq 2 ]
+      [ "${1:-}" = "--setup-token-file" ]
+      [ "${2:-}" = "$HOME/.config/novascale-agent/pending-setup-token" ]
+      [ -f "${2:-}" ]
+      printf 'pending setup-token revalidated\n' >>"$NOVASCALE_TEST_AGENT_LOG"
+    fi
+    ;;
+  registration-state)
+    printf 'registration-state\n' >>"$NOVASCALE_TEST_AGENT_LOG"
+    printf '%s\n' 'pending'
+    ;;
+  status)
+    printf 'status\n' >>"$NOVASCALE_TEST_AGENT_LOG"
+    ;;
+  hooks|serve|daemon-version|app-server)
+    exit 0
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+EOF
+chmod 755 "$enrollment_agent"
+
+HOME="$enrollment_home" PATH="$test_path" NOVASCALE_TEST_AGENT_LOG="$enrollment_log" \
+  "$root_dir/setup.sh" \
+  --listen 127.0.0.1 \
+  --host 127.0.0.1 \
+  --port "$((test_port + 3))" \
+  --no-start \
+  --no-qr \
+  --enable-notifications \
+  --notification-endpoint http://127.0.0.1:8080 \
+  --notification-setup-token-file "$setup_token_file" \
+  --agent-binary "$enrollment_agent" \
+  >"$temporary_root/enrollment-output" \
+  2>"$temporary_root/enrollment-error"
+grep -q '^init endpoint and setup-token path received$' "$enrollment_log"
+staged_setup_token="$enrollment_home/.config/novascale-agent/pending-setup-token"
+cmp -s "$setup_token_file" "$staged_setup_token"
+staged_mode="$(stat -f '%Lp' "$staged_setup_token" 2>/dev/null || stat -c '%a' "$staged_setup_token")"
+test "$staged_mode" = "600"
+if grep -F "$setup_token" \
+  "$enrollment_home/.config/novascale-agent/config.json" \
+  "$enrollment_log" \
+  "$temporary_root/enrollment-output" \
+  "$temporary_root/enrollment-error" >/dev/null 2>&1
+then
+  printf 'notification setup token escaped its protected pending file\n' >&2
+  exit 1
+fi
+
+: >"$enrollment_log"
+HOME="$enrollment_home" PATH="$test_path" NOVASCALE_TEST_AGENT_LOG="$enrollment_log" \
+  "$root_dir/setup.sh" \
+  --listen 127.0.0.1 \
+  --host 127.0.0.1 \
+  --port "$((test_port + 3))" \
+  --yes \
+  --no-start \
+  --no-qr \
+  --enable-notifications \
+  --agent-binary "$enrollment_agent" \
+  >"$temporary_root/enrollment-redeploy-output" \
+  2>"$temporary_root/enrollment-redeploy-error"
+grep -q '^registration-state$' "$enrollment_log"
+grep -q '^pending setup-token revalidated$' "$enrollment_log"
+if grep -q '^init endpoint' "$enrollment_log"; then
+  printf 'existing notification enrollment unexpectedly requested another caller setup token\n' >&2
+  exit 1
+fi
+
 if command -v go >/dev/null 2>&1; then
   (
     cd "$root_dir/notifications"
@@ -145,6 +267,6 @@ fi
 printf 'release verification passed\n'
 printf '  default bootstrap: wrapper only\n'
 printf '  redeploy token: preserved unless --rotate-token is explicit\n'
-printf '  notification bootstrap: explicit, signed host registration\n'
+printf '  notification bootstrap: protected enrollment staging with daemon-owned retry\n'
 printf '  embedded helper: synchronized\n'
 printf '  credential shapes: clear\n'
