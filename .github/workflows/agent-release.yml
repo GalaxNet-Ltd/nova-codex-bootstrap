@@ -2,16 +2,8 @@ name: Agent release
 
 on:
   push:
-    branches:
-      - "feature/notification-release"
     tags:
       - "agent-v*"
-  workflow_dispatch:
-    inputs:
-      version:
-        description: Version embedded in dry-run artifacts
-        required: true
-        default: "0.1.0-dev"
 
 permissions:
   contents: read
@@ -44,16 +36,8 @@ jobs:
           cache-dependency-path: notifications/go.sum
       - name: Select release version
         shell: bash
-        env:
-          MANUAL_VERSION: ${{ inputs.version }}
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/agent-v* ]]; then
-            VERSION="${GITHUB_REF_NAME#agent-v}"
-          elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
-            VERSION="$MANUAL_VERSION"
-          else
-            VERSION="0.1.0-dev.${GITHUB_SHA:0:12}"
-          fi
+          VERSION="${GITHUB_REF_NAME#agent-v}"
           [[ "$VERSION" =~ ^[A-Za-z0-9._+-]+$ ]] || {
             echo "invalid agent version" >&2
             exit 1
@@ -101,16 +85,8 @@ jobs:
           cache-dependency-path: notifications/go.sum
       - name: Select release version
         shell: bash
-        env:
-          MANUAL_VERSION: ${{ inputs.version }}
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/agent-v* ]]; then
-            VERSION="${GITHUB_REF_NAME#agent-v}"
-          elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
-            VERSION="$MANUAL_VERSION"
-          else
-            VERSION="0.1.0-dev.${GITHUB_SHA:0:12}"
-          fi
+          VERSION="${GITHUB_REF_NAME#agent-v}"
           [[ "$VERSION" =~ ^[A-Za-z0-9._+-]+$ ]] || {
             echo "invalid agent version" >&2
             exit 1
