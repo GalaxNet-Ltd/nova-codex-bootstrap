@@ -180,7 +180,7 @@ not wait on a registration network request:
   --notification-setup-token-file /path/to/protected/setup-token
 ```
 
-The debug release currently pins agent `0.1.0-dev.3`. Use
+The debug release currently pins agent `0.1.0-dev.4`. Use
 `--agent-version <version>` to select another published immutable release.
 Bootstrap downloads the exact platform archive and `SHA256SUMS` from the
 corresponding `agent-v<version>` GitHub Release, rejects unexpected archive

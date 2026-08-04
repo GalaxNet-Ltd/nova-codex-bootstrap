@@ -49,7 +49,7 @@ token。token 必须放在受保护的 `0600` 临时文件中，并通过
 永久拒绝后删除自己的 token 文件。重新部署已注册或仍在注册的主机会保留
 原有身份。
 
-当前调试流程固定使用 agent `0.1.0-dev.3`。bootstrap 会从对应的 GitHub
+当前调试流程固定使用 agent `0.1.0-dev.4`。bootstrap 会从对应的 GitHub
 Release 下载当前平台的归档和 `SHA256SUMS`，校验摘要、归档路径和内嵌版本；
 macOS 还会验证 Developer ID 签名、公证票据和 universal 架构。
 

@@ -259,6 +259,7 @@ jobs:
             release_flags+=(--prerelease)
           fi
           gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --title "NovaScale notification agent ${GITHUB_REF_NAME#agent-v}" \
             --generate-notes \
