@@ -42,10 +42,12 @@ notification backend. Existing NovaScale versions—including the version
 currently available on the App Store—can continue to bootstrap and use Codex
 hosts exactly as before.
 
-Notifications are an explicit, additive feature. During development they are
-enabled only with `--enable-notifications --dev-agent`; a future signed release
-will retain an explicit notification opt-in and will not silently change old
-installations.
+Notifications remain an additive feature. The updated app's new-host sheet can
+default its notification toggle on; supplying the notification endpoint and
+setup-token file activates notification setup and downloads the pinned signed
+agent release automatically. Turning that toggle off must omit the enrollment
+inputs and pass `--no-notifications`. The raw wrapper-only command above remains
+unchanged for older apps and manual users.
 
 ## Advanced Subnet Mode
 
@@ -154,12 +156,11 @@ The agent also provides an explicit `app-server restart` command for the host
 user. It never restarts the wrapper automatically or exposes restart control
 over the notification channel.
 
-For the current pre-release workflow, build the host binaries locally and run
-setup from the clone. An already-enrolled agent keeps its existing identity:
+For notification-enabled setup, bootstrap downloads the pinned agent release
+for the host platform. An already-enrolled agent keeps its existing identity:
 
 ```sh
-notifications/scripts/build-agent-release.sh
-./setup.sh --yes --enable-notifications --dev-agent
+./setup.sh --yes --enable-notifications
 ```
 
 During an agent redeploy, setup asks the running daemon for its version and
@@ -175,10 +176,19 @@ not wait on a registration network request:
 
 ```sh
 ./setup.sh --yes --enable-notifications \
-  --dev-agent \
   --notification-endpoint https://<NOTIFICATION_ENDPOINT> \
   --notification-setup-token-file /path/to/protected/setup-token
 ```
+
+The debug release currently pins agent `0.1.0-dev.1`. Use
+`--agent-version <version>` to select another published immutable release.
+Bootstrap downloads the exact platform archive and `SHA256SUMS` from the
+corresponding `agent-v<version>` GitHub Release, rejects unexpected archive
+paths or links, verifies the SHA-256 digest and embedded version, and never
+falls back to an unsigned build. macOS additionally requires a valid Developer
+ID signature, Gatekeeper assessment, and the expected universal architectures
+before the binary is executed. A matching installed version is reused without
+a network download.
 
 The daemon keeps a protected `0600` copy outside its config, key file, queue,
 and service definition while registration is pending. It proves possession of
@@ -196,9 +206,8 @@ existing `~/.codex/hooks.json`. Review and trust the resulting hook definition
 with `/hooks` in Codex CLI. The hook reports events only and always returns
 `{}`; Codex and the user retain the approval decision.
 
-`--dev-agent` is deliberately required before setup will select an unsigned
-binary from `notifications/dist`. Automatic public installation remains gated
-on immutable releases, SHA-256 verification, and macOS signing/notarization.
+`--dev-agent` and `--agent-binary` remain explicit development overrides and
+cannot be combined with `--agent-version`.
 
 See [`docs/release-preparation.md`](docs/release-preparation.md) for the clean
 Linux host matrix, backward-compatibility gate, and staged release checklist.

@@ -180,7 +180,17 @@ jobs:
             --sign "$SIGNING_IDENTITY" \
             "$binary"
           codesign --verify --strict --verbose=2 "$binary"
-          ditto -c -k --sequesterRsrc "$RUNNER_TEMP/package" "$archive"
+          ditto --norsrc --noextattr --noqtn --noacl \
+            -c -k "$RUNNER_TEMP/package" "$archive"
+          zipinfo -1 "$archive" | awk '
+            {
+              sub(/\r$/, "")
+              count++
+              if ($0 ~ /^\// || $0 ~ /(^|\/)\.\.($|\/)/) unsafe = 1
+              if ($0 != "novascale-agent" && $0 != "LICENSE" && $0 !~ /^THIRD_PARTY_LICENSES\//) unsafe = 1
+            }
+            END { exit (unsafe || count == 0) ? 1 : 0 }
+          '
           notary_result="$RUNNER_TEMP/notary-result.json"
           xcrun notarytool submit "$archive" \
             --key "$NOTARY_KEY_PATH" \
@@ -203,6 +213,7 @@ jobs:
             exit 1
           fi
           echo "notarization status: Accepted"
+          spctl --assess --type execute --verbose=2 "$binary"
       - name: Remove signing material
         if: always()
         shell: bash
@@ -243,8 +254,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          release_flags=()
+          if [[ "${GITHUB_REF_NAME#agent-v}" == *-* ]]; then
+            release_flags+=(--prerelease)
+          fi
           gh release create "$GITHUB_REF_NAME" \
             --verify-tag \
             --title "NovaScale notification agent ${GITHUB_REF_NAME#agent-v}" \
             --generate-notes \
+            "${release_flags[@]}" \
             release/*

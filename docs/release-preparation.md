@@ -16,6 +16,7 @@ The wrapper-only bootstrap remains the compatibility baseline.
 | Existing app + notification-capable source | Existing host operations continue; notifications remain disabled unless the host user opts in. |
 | Updated app + wrapper-only host | Codex access works; the app reports remote notifications as unavailable for that host. |
 | Updated app + opted-in host | The agent observes trusted hooks and uploads minimized, signed lifecycle events. |
+| Debug app + new host | Notifications default on in the app sheet; the user can choose the lean `--no-notifications` path. |
 
 The default invocation must continue to pass `scripts/verify-release.sh`. It
 must not require notification enrollment, an endpoint, hooks, or an agent
@@ -38,12 +39,11 @@ Verify that only the wrapper service is installed, no notification agent state
 or hooks exist, existing app pairing still works, prompting and approvals are
 unchanged, and uninstall removes the wrapper service.
 
-Run notification validation separately. Until signed artifacts exist, build
-locally and keep the development flag explicit:
+After publishing the pinned prerelease, run notification validation separately:
 
 ```sh
 notifications/scripts/build-agent-release.sh
-./setup.sh --enable-notifications --dev-agent \
+./setup.sh --enable-notifications \
   --notification-endpoint https://<NOTIFICATION_ENDPOINT> \
   --notification-setup-token-file /path/to/protected/setup-token
 ```
@@ -117,9 +117,14 @@ notarizing a ZIP but does not support stapling a ticket directly to the ZIP, so
 the workflow relies on the accepted online notarization ticket and verifies
 the inner executable's Developer ID signature before upload.
 
-Automatic bootstrap installation remains gated until setup can download a
-pinned immutable version, authenticate `SHA256SUMS`, and fail closed instead
-of falling back to a repository build or unsigned file.
+Automatic bootstrap installation pins `0.1.0-dev.1` for the debug cycle. It
+downloads only from this repository's HTTPS GitHub Release URL, verifies the
+matching `SHA256SUMS` entry, rejects unexpected archive paths and links,
+requires the embedded version to match, and fails closed instead of falling
+back to a repository build or unsigned file. macOS also requires Developer ID
+verification, Gatekeeper assessment, and both universal architectures before
+execution. `--agent-version` supports a different explicitly selected release;
+an already installed matching version is usable offline.
 
 Keep `--dev-agent` available only as an explicit developer path.
 
@@ -131,8 +136,9 @@ already-enrolled hosts sending signed events.
 
 1. Publish the backward-compatible wrapper and agent source.
 2. Validate default bootstrap with an existing app release.
-3. Publish a signed host-agent prerelease.
-4. Validate app-issued, single-use setup-token enrollment and lifecycle
+3. Tag this commit as `agent-v0.1.0-dev.1` and publish the signed host-agent prerelease.
+4. Point the debug app bootstrap sheet at this branch, leave notifications on
+   by default, and validate app-issued setup-token enrollment and lifecycle
    notifications with a test app.
 5. Release updated app support while keeping notifications opt-in per host.
 

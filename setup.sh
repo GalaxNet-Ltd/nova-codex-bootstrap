@@ -8,6 +8,8 @@ AGENT_SERVICE_LABEL="dev.galaxnet.novascale.agent"
 AGENT_SERVICE_FILE="novascale-agent.service"
 DEFAULT_PORT="14500"
 DEFAULT_SCHEME="ws"
+DEFAULT_AGENT_VERSION="0.1.0-dev.1"
+AGENT_RELEASE_BASE_URL="https://github.com/GalaxNet-Ltd/nova-codex-bootstrap/releases/download"
 CONFIG_DIR="${HOME}/.codex"
 CONFIG_FILE="${CONFIG_DIR}/novascale-codex-host.env"
 TOKEN_FILE="${CONFIG_DIR}/novascale-app-server-token"
@@ -28,6 +30,10 @@ codex_bin=""
 codex_dir=""
 agent_binary_source=""
 dev_agent=0
+agent_release_version="$DEFAULT_AGENT_VERSION"
+agent_version_set=0
+resolved_agent_binary=""
+agent_download_dir=""
 agent_incoming_version=""
 agent_previous_binary_version=""
 agent_previous_live_version=""
@@ -49,6 +55,16 @@ notification_disabled=0
 notification_endpoint=""
 notification_setup_token_file=""
 no_hook_install=0
+
+cleanup_agent_download() {
+  [ -n "$agent_download_dir" ] || return 0
+  [ -d "$agent_download_dir" ] || return 0
+  [ -f "$agent_download_dir/.novascale-agent-download" ] || return 0
+  rm -rf -- "$agent_download_dir"
+}
+
+trap cleanup_agent_download EXIT
+trap 'exit 1' HUP INT TERM
 
 usage() {
   cat <<'EOF'
@@ -76,6 +92,7 @@ Options:
                         token staged for daemon-owned enrollment.
   --dev-agent           Install an unsigned local agent build from notifications/dist.
   --agent-binary <path> Install this prebuilt novascale-agent binary.
+  --agent-version <ver> Download this pinned agent release. Default: 0.1.0-dev.1.
   --no-hook-install     Install the agent without modifying Codex hooks.json.
   --no-notifications    Leave any notification-agent installation unchanged.
   --help                Show this help.
@@ -505,10 +522,147 @@ agent_platform() {
   printf '%s-%s\n' "$agent_os" "$agent_arch"
 }
 
+validate_agent_release_version() {
+  case "$agent_release_version" in
+    ''|*[!0-9A-Za-z._-]*) die "Invalid notification-agent release version" ;;
+  esac
+}
+
+download_file() {
+  source_url="$1"
+  destination="$2"
+  case "$source_url" in
+    https://*) ;;
+    *) die "Refusing non-HTTPS notification-agent download" ;;
+  esac
+  if command_exists curl; then
+    curl --fail --location --silent --show-error \
+      --proto '=https' --proto-redir '=https' --tlsv1.2 \
+      --retry 3 --connect-timeout 15 \
+      --output "$destination" "$source_url"
+  elif command_exists wget; then
+    wget --quiet --https-only --secure-protocol=TLSv1_2 \
+      --output-document="$destination" "$source_url"
+  else
+    die "curl or wget is required to download the notification agent"
+  fi
+}
+
+calculate_sha256() {
+  file_path="$1"
+  if command_exists shasum; then
+    shasum -a 256 "$file_path" | awk '{print tolower($1)}'
+  elif command_exists sha256sum; then
+    sha256sum "$file_path" | awk '{print tolower($1)}'
+  else
+    die "shasum or sha256sum is required to verify the notification agent"
+  fi
+}
+
+validate_archive_entries() {
+  awk '
+    {
+      sub(/\r$/, "")
+      count++
+      if ($0 ~ /^\// || $0 ~ /(^|\/)\.\.($|\/)/) unsafe = 1
+      if ($0 != "novascale-agent" && $0 != "LICENSE" && $0 !~ /^THIRD_PARTY_LICENSES\//) unsafe = 1
+    }
+    END { exit (unsafe || count == 0) ? 1 : 0 }
+  '
+}
+
+download_agent_release() {
+  validate_agent_release_version
+  platform="$(agent_platform || true)"
+  [ -n "$platform" ] || die "Unsupported notification-agent platform"
+  agent_os="${platform%-*}"
+  agent_arch="${platform#*-}"
+  case "$agent_os" in
+    darwin) archive_name="novascale-agent_${agent_release_version}_darwin_universal.zip" ;;
+    linux) archive_name="novascale-agent_${agent_release_version}_linux_${agent_arch}.tar.gz" ;;
+    *) die "Unsupported notification-agent platform: $platform" ;;
+  esac
+
+  if [ -z "$agent_download_dir" ]; then
+    agent_download_dir="$(mktemp -d "${TMPDIR:-/tmp}/novascale-agent-download.XXXXXX")"
+    chmod 700 "$agent_download_dir"
+    : >"${agent_download_dir}/.novascale-agent-download"
+  fi
+  archive_path="${agent_download_dir}/${archive_name}"
+  checksums_path="${agent_download_dir}/SHA256SUMS"
+  package_dir="${agent_download_dir}/package"
+  release_url="${AGENT_RELEASE_BASE_URL}/agent-v${agent_release_version}"
+
+  notice "Downloading signed NovaScale notification agent ${agent_release_version} for ${platform}."
+  download_file "${release_url}/SHA256SUMS" "$checksums_path"
+  download_file "${release_url}/${archive_name}" "$archive_path"
+  checksums_size="$(wc -c <"$checksums_path" | tr -d ' ')"
+  archive_size="$(wc -c <"$archive_path" | tr -d ' ')"
+  [ "$checksums_size" -le 65536 ] 2>/dev/null || die "Release checksum file is unexpectedly large"
+  [ "$archive_size" -le 104857600 ] 2>/dev/null || die "Notification-agent archive is unexpectedly large"
+
+  expected_hash="$(awk -v target="$archive_name" '
+    {
+      name = $2
+      sub(/^\*/, "", name)
+      if (name == target) { count++; hash = tolower($1) }
+    }
+    END { if (count == 1) print hash }
+  ' "$checksums_path")"
+  case "$expected_hash" in
+    *[!0-9a-f]*|'') die "Release checksum entry is missing or malformed for ${archive_name}" ;;
+  esac
+  [ "${#expected_hash}" -eq 64 ] || die "Release checksum entry has an invalid length for ${archive_name}"
+  actual_hash="$(calculate_sha256 "$archive_path")"
+  [ "$actual_hash" = "$expected_hash" ] || die "Notification-agent release checksum mismatch"
+
+  mkdir -p "$package_dir"
+  case "$agent_os" in
+    darwin)
+      command_exists zipinfo || die "zipinfo is required to inspect the macOS notification-agent archive"
+      zipinfo -1 "$archive_path" | validate_archive_entries || die "Notification-agent archive contains an unsafe path"
+      if zipinfo -l "$archive_path" | awk '$1 ~ /^l/ { found = 1 } END { exit found ? 0 : 1 }'; then
+        die "Notification-agent archive contains a symbolic link"
+      fi
+      if command_exists ditto; then
+        ditto -x -k "$archive_path" "$package_dir"
+      elif command_exists unzip; then
+        unzip -q "$archive_path" -d "$package_dir"
+      else
+        die "ditto or unzip is required to install the macOS notification agent"
+      fi
+      ;;
+    linux)
+      command_exists tar || die "tar is required to install the Linux notification agent"
+      tar -tzf "$archive_path" | validate_archive_entries || die "Notification-agent archive contains an unsafe path"
+      if tar -tvzf "$archive_path" | awk '$1 ~ /^l/ || / link to / { found = 1 } END { exit found ? 0 : 1 }'; then
+        die "Notification-agent archive contains a link"
+      fi
+      tar -xzf "$archive_path" -C "$package_dir"
+      ;;
+  esac
+
+  candidate="${package_dir}/novascale-agent"
+  [ -f "$candidate" ] && [ ! -L "$candidate" ] || die "Notification-agent archive is missing its regular executable"
+  chmod 755 "$candidate"
+  if [ "$agent_os" = "darwin" ]; then
+    command_exists codesign || die "codesign is required to verify the macOS notification agent"
+    command_exists spctl || die "spctl is required to assess the macOS notification agent"
+    codesign --verify --strict --verbose=2 "$candidate"
+    spctl --assess --type execute --verbose=2 "$candidate"
+    command_exists lipo || die "lipo is required to verify the universal macOS notification agent"
+    lipo "$candidate" -verify_arch arm64 x86_64
+  fi
+  downloaded_version="$("$candidate" version 2>/dev/null || true)"
+  [ "$downloaded_version" = "$agent_release_version" ] || die "Downloaded notification-agent version does not match ${agent_release_version}"
+  resolved_agent_binary="$candidate"
+}
+
 find_agent_binary() {
+  resolved_agent_binary=""
   if [ -n "$agent_binary_source" ]; then
     [ -x "$agent_binary_source" ] || die "Notification agent binary is not executable: $agent_binary_source"
-    printf '%s\n' "$agent_binary_source"
+    resolved_agent_binary="$agent_binary_source"
     return 0
   fi
 
@@ -521,16 +675,20 @@ find_agent_binary() {
       "${setup_source_dir}/dist/${platform}/novascale-agent"
     do
       if [ -x "$candidate" ]; then
-        printf '%s\n' "$candidate"
+        resolved_agent_binary="$candidate"
         return 0
       fi
     done
+    die "--dev-agent was provided, but no local agent build exists for ${platform}"
   fi
   if [ -x "$AGENT_PATH" ]; then
-    printf '%s\n' "$AGENT_PATH"
-    return 0
+    installed_agent_version="$("$AGENT_PATH" version 2>/dev/null || true)"
+    if [ "$installed_agent_version" = "$agent_release_version" ]; then
+      resolved_agent_binary="$AGENT_PATH"
+      return 0
+    fi
   fi
-  return 1
+  download_agent_release
 }
 
 install_agent_binary() {
@@ -719,8 +877,11 @@ configure_notification_agent() {
   if [ "$notification_requested" -eq 0 ] && [ ! -f "$AGENT_CONFIG_FILE" ]; then
     return 0
   fi
-  source_path="$(find_agent_binary || true)"
-  [ -n "$source_path" ] || die "No installed notification agent found. Until signed releases are available, build locally and pass --dev-agent or --agent-binary <path>."
+  if [ -z "$resolved_agent_binary" ]; then
+    find_agent_binary
+  fi
+  source_path="$resolved_agent_binary"
+  [ -n "$source_path" ] || die "Notification-agent release could not be resolved"
   if [ "$dev_agent" -eq 1 ] || [ -n "$agent_binary_source" ]; then
     notice "Development mode: installing an unsigned local notification-agent binary."
   fi
@@ -742,8 +903,9 @@ preflight_notification_agent() {
   if [ "$notification_requested" -eq 0 ] && [ ! -f "$AGENT_CONFIG_FILE" ]; then
     return 0
   fi
-  source_path="$(find_agent_binary || true)"
-  [ -n "$source_path" ] || die "No installed notification agent found. Until signed releases are available, build locally and pass --dev-agent or --agent-binary <path>."
+  find_agent_binary
+  source_path="$resolved_agent_binary"
+  [ -n "$source_path" ] || die "Notification-agent release could not be resolved"
   if [ ! -f "$AGENT_CONFIG_FILE" ]; then
     [ -n "$notification_endpoint" ] || die "--notification-endpoint is required for first notification-agent enrollment"
     [ -n "$notification_setup_token_file" ] || die "--notification-setup-token-file is required for first notification-agent enrollment"
@@ -1244,6 +1406,13 @@ while [ "$#" -gt 0 ]; do
       notification_requested=1
       shift 2
       ;;
+    --agent-version)
+      [ "$#" -ge 2 ] || die "--agent-version requires a value"
+      agent_release_version="$2"
+      agent_version_set=1
+      notification_requested=1
+      shift 2
+      ;;
     --no-hook-install)
       no_hook_install=1
       shift
@@ -1265,6 +1434,13 @@ done
 if [ "$notification_requested" -eq 1 ] && [ "$notification_disabled" -eq 1 ]; then
   die "--no-notifications cannot be combined with notification setup options"
 fi
+if [ "$dev_agent" -eq 1 ] && [ -n "$agent_binary_source" ]; then
+  die "--dev-agent and --agent-binary cannot be combined"
+fi
+if [ "$agent_version_set" -eq 1 ] && { [ "$dev_agent" -eq 1 ] || [ -n "$agent_binary_source" ]; }; then
+  die "--agent-version cannot be combined with --dev-agent or --agent-binary"
+fi
+validate_agent_release_version
 
 if [ "$print_only" -eq 1 ]; then
   load_existing_config

@@ -36,9 +36,10 @@ curl -fsSL https://raw.githubusercontent.com/GalaxNet-Ltd/nova-codex-bootstrap/r
 agent、修改 Codex hooks，也不需要通知後端。包含目前 App Store 版本在
 內的舊版 NovaScale，仍可依原方式安裝並使用 Codex 主機。
 
-通知功能是明確啟用的附加功能。開發階段只有傳入
-`--enable-notifications --dev-agent` 才會啟用；未來的簽署發行版也不會
-在未告知使用者的情況下改變既有安裝。
+通知功能仍是附加功能。新版 App 的新主機頁面可以預設開啟通知；傳入通知
+後端位址和 setup-token 檔案時，bootstrap 會自動下載固定版本的已簽署
+agent。使用者關閉通知開關時，App 應省略註冊參數並傳入
+`--no-notifications`。舊版 App 和上面的純 wrapper 指令不會被靜默改變。
 
 通知 agent 的首次註冊還需要由 App/後端簽發、短效且只能使用一次的
 setup token。token 必須放在受保護的 `0600` 暫存檔，並透過
@@ -47,6 +48,10 @@ token 暫存到 agent 自己的 `0600` 檔案，不執行網路註冊；呼叫�
 刪除原暫存檔。agent daemon 會在背景註冊、對暫時性失敗自動重試，並在
 成功或永久拒絕後刪除自己的 token 檔案。重新部署已註冊或仍在註冊的主機
 會保留原有身分。
+
+目前除錯流程固定使用 agent `0.1.0-dev.1`。bootstrap 會從對應的 GitHub
+Release 下載目前平台的封裝和 `SHA256SUMS`，驗證摘要、封裝路徑與內嵌版本；
+macOS 還會驗證 Developer ID 簽章、Gatekeeper 評估及 universal 架構。
 
 ## 進階子網模式
 

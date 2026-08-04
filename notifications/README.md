@@ -40,8 +40,9 @@ go vet ./...
 
 The build script produces macOS arm64/amd64, Linux arm64/amd64, and—when
 `lipo` is available—a universal macOS binary under `dist/`. These are unsigned
-release inputs. Public installation requires immutable versions, SHA-256
-verification, and macOS signing/notarization.
+release inputs. Tag-driven public releases are signed/notarized where
+applicable, and `setup.sh` installs only a pinned release after checksum,
+archive, platform, and embedded-version verification.
 
 Binary release archives include the repository `LICENSE` and the dependency
 notices collected under `third_party_licenses/`.

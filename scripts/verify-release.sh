@@ -136,6 +136,10 @@ enrollment_home="$temporary_root/enrollment-home"
 enrollment_agent="$temporary_root/enrollment-agent"
 enrollment_log="$temporary_root/enrollment-agent.log"
 setup_token_file="$temporary_root/setup-token"
+release_fixture_dir="$temporary_root/release-fixture"
+release_package_dir="$temporary_root/release-package"
+release_download_log="$temporary_root/release-download.log"
+download_stub_dir="$temporary_root/download-bin"
 mkdir -p "$enrollment_home"
 setup_token="$(printf '%043d' 0)"
 printf '%s\n' "$setup_token" >"$setup_token_file"
@@ -145,7 +149,7 @@ cat >"$enrollment_agent" <<'EOF'
 set -eu
 case "${1:-}" in
   version)
-    printf '%s\n' '1.0.0-enrollment-test'
+    printf '%s\n' '0.1.0-dev.1'
     ;;
   init)
     shift
@@ -185,7 +189,116 @@ esac
 EOF
 chmod 755 "$enrollment_agent"
 
-HOME="$enrollment_home" PATH="$test_path" NOVASCALE_TEST_AGENT_LOG="$enrollment_log" \
+mkdir -p "$release_fixture_dir" "$release_package_dir/THIRD_PARTY_LICENSES" "$download_stub_dir"
+cp "$enrollment_agent" "$release_package_dir/novascale-agent"
+cp "$root_dir/LICENSE" "$release_package_dir/LICENSE"
+cp -R "$root_dir/notifications/third_party_licenses/." "$release_package_dir/THIRD_PARTY_LICENSES/"
+release_archive="novascale-agent_0.1.0-dev.1_linux_amd64.tar.gz"
+tar -C "$release_package_dir" -czf "$release_fixture_dir/$release_archive" \
+  novascale-agent LICENSE THIRD_PARTY_LICENSES
+if command -v shasum >/dev/null 2>&1; then
+  (cd "$release_fixture_dir" && shasum -a 256 "$release_archive" >SHA256SUMS)
+else
+  (cd "$release_fixture_dir" && sha256sum "$release_archive" >SHA256SUMS)
+fi
+cat >"$download_stub_dir/curl" <<'EOF'
+#!/bin/sh
+set -eu
+output=""
+url=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output)
+      output="$2"
+      shift 2
+      ;;
+    http://*|https://*)
+      url="$1"
+      shift
+      ;;
+    *) shift ;;
+  esac
+done
+[ -n "$output" ] && [ -n "$url" ]
+asset="${url##*/}"
+printf '%s\n' "$asset" >>"$NOVASCALE_TEST_RELEASE_LOG"
+cp "$NOVASCALE_TEST_RELEASE_DIR/$asset" "$output"
+EOF
+cat >"$download_stub_dir/uname" <<'EOF'
+#!/bin/sh
+case "${1:-}" in
+  -s|'') printf '%s\n' 'Linux' ;;
+  -m) printf '%s\n' 'x86_64' ;;
+  -n) printf '%s\n' 'release-test-host' ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod 755 "$download_stub_dir/curl" "$download_stub_dir/uname"
+download_test_path="$download_stub_dir:$test_path"
+
+bad_release_dir="$temporary_root/bad-release-fixture"
+bad_release_home="$temporary_root/bad-release-home"
+mkdir -p "$bad_release_dir" "$bad_release_home"
+cp "$release_fixture_dir/$release_archive" "$bad_release_dir/$release_archive"
+printf '%064d  %s\n' 0 "$release_archive" >"$bad_release_dir/SHA256SUMS"
+if HOME="$bad_release_home" PATH="$download_test_path" NOVASCALE_TEST_AGENT_LOG="$enrollment_log" \
+  NOVASCALE_TEST_RELEASE_DIR="$bad_release_dir" NOVASCALE_TEST_RELEASE_LOG="$release_download_log" \
+  "$root_dir/setup.sh" \
+  --listen 127.0.0.1 \
+  --host 127.0.0.1 \
+  --port "$((test_port + 3))" \
+  --no-start \
+  --no-qr \
+  --notification-endpoint http://127.0.0.1:8080 \
+  --notification-setup-token-file "$setup_token_file" \
+  >"$temporary_root/bad-release-output" \
+  2>"$temporary_root/bad-release-error"
+then
+  printf 'notification setup accepted a mismatched release checksum\n' >&2
+  exit 1
+fi
+grep -q 'release checksum mismatch' "$temporary_root/bad-release-error"
+test ! -e "$bad_release_home/.codex/novascale-codex-host.env"
+test ! -e "$bad_release_home/.local/bin/novascale-agent"
+: >"$release_download_log"
+
+unsafe_release_dir="$temporary_root/unsafe-release-fixture"
+unsafe_release_package="$temporary_root/unsafe-release-package"
+unsafe_release_home="$temporary_root/unsafe-release-home"
+mkdir -p "$unsafe_release_dir" "$unsafe_release_package/THIRD_PARTY_LICENSES" "$unsafe_release_home"
+ln -s /bin/sh "$unsafe_release_package/novascale-agent"
+cp "$root_dir/LICENSE" "$unsafe_release_package/LICENSE"
+cp -R "$root_dir/notifications/third_party_licenses/." "$unsafe_release_package/THIRD_PARTY_LICENSES/"
+tar -C "$unsafe_release_package" -czf "$unsafe_release_dir/$release_archive" \
+  novascale-agent LICENSE THIRD_PARTY_LICENSES
+if command -v shasum >/dev/null 2>&1; then
+  (cd "$unsafe_release_dir" && shasum -a 256 "$release_archive" >SHA256SUMS)
+else
+  (cd "$unsafe_release_dir" && sha256sum "$release_archive" >SHA256SUMS)
+fi
+if HOME="$unsafe_release_home" PATH="$download_test_path" NOVASCALE_TEST_AGENT_LOG="$enrollment_log" \
+  NOVASCALE_TEST_RELEASE_DIR="$unsafe_release_dir" NOVASCALE_TEST_RELEASE_LOG="$release_download_log" \
+  "$root_dir/setup.sh" \
+  --listen 127.0.0.1 \
+  --host 127.0.0.1 \
+  --port "$((test_port + 4))" \
+  --no-start \
+  --no-qr \
+  --notification-endpoint http://127.0.0.1:8080 \
+  --notification-setup-token-file "$setup_token_file" \
+  >"$temporary_root/unsafe-release-output" \
+  2>"$temporary_root/unsafe-release-error"
+then
+  printf 'notification setup accepted a linked release executable\n' >&2
+  exit 1
+fi
+grep -q 'archive contains a link' "$temporary_root/unsafe-release-error"
+test ! -e "$unsafe_release_home/.codex/novascale-codex-host.env"
+test ! -e "$unsafe_release_home/.local/bin/novascale-agent"
+: >"$release_download_log"
+
+HOME="$enrollment_home" PATH="$download_test_path" NOVASCALE_TEST_AGENT_LOG="$enrollment_log" \
+  NOVASCALE_TEST_RELEASE_DIR="$release_fixture_dir" NOVASCALE_TEST_RELEASE_LOG="$release_download_log" \
   "$root_dir/setup.sh" \
   --listen 127.0.0.1 \
   --host 127.0.0.1 \
@@ -195,9 +308,12 @@ HOME="$enrollment_home" PATH="$test_path" NOVASCALE_TEST_AGENT_LOG="$enrollment_
   --enable-notifications \
   --notification-endpoint http://127.0.0.1:8080 \
   --notification-setup-token-file "$setup_token_file" \
-  --agent-binary "$enrollment_agent" \
   >"$temporary_root/enrollment-output" \
   2>"$temporary_root/enrollment-error"
+grep -q 'Downloading signed NovaScale notification agent 0.1.0-dev.1 for linux-amd64.' "$temporary_root/enrollment-output"
+test "$(grep -c '^SHA256SUMS$' "$release_download_log")" -eq 1
+test "$(grep -c "^${release_archive}$" "$release_download_log")" -eq 1
+cmp -s "$enrollment_agent" "$enrollment_home/.local/bin/novascale-agent"
 grep -q '^init endpoint and setup-token path received$' "$enrollment_log"
 staged_setup_token="$enrollment_home/.config/novascale-agent/pending-setup-token"
 cmp -s "$setup_token_file" "$staged_setup_token"
@@ -214,7 +330,9 @@ then
 fi
 
 : >"$enrollment_log"
-HOME="$enrollment_home" PATH="$test_path" NOVASCALE_TEST_AGENT_LOG="$enrollment_log" \
+: >"$release_download_log"
+HOME="$enrollment_home" PATH="$download_test_path" NOVASCALE_TEST_AGENT_LOG="$enrollment_log" \
+  NOVASCALE_TEST_RELEASE_DIR="$release_fixture_dir" NOVASCALE_TEST_RELEASE_LOG="$release_download_log" \
   "$root_dir/setup.sh" \
   --listen 127.0.0.1 \
   --host 127.0.0.1 \
@@ -223,9 +341,9 @@ HOME="$enrollment_home" PATH="$test_path" NOVASCALE_TEST_AGENT_LOG="$enrollment_
   --no-start \
   --no-qr \
   --enable-notifications \
-  --agent-binary "$enrollment_agent" \
   >"$temporary_root/enrollment-redeploy-output" \
   2>"$temporary_root/enrollment-redeploy-error"
+test ! -s "$release_download_log"
 grep -q '^registration-state$' "$enrollment_log"
 grep -q '^pending setup-token revalidated$' "$enrollment_log"
 if grep -q '^init endpoint' "$enrollment_log"; then
