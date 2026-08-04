@@ -388,6 +388,10 @@ sh "$root_dir/scripts/test-notification-agent-upgrade.sh"
 
 test "$(grep -c -- '--check-notarization' "$root_dir/setup.sh")" -eq 1
 test "$(grep -c -- '--check-notarization' "$root_dir/.github/workflows/agent-release.yml")" -eq 1
+grep -q 'lipo "$candidate" -verify_arch arm64' "$root_dir/setup.sh"
+grep -q 'lipo "$candidate" -verify_arch x86_64' "$root_dir/setup.sh"
+grep -q 'lipo "$package_dir/novascale-agent" -verify_arch arm64' "$root_dir/.github/workflows/agent-release.yml"
+grep -q 'lipo "$package_dir/novascale-agent" -verify_arch x86_64' "$root_dir/.github/workflows/agent-release.yml"
 test "$(grep -c -- '--repo "$GITHUB_REPOSITORY"' "$root_dir/.github/workflows/agent-release.yml")" -eq 1
 if grep -q -- 'spctl --assess' \
   "$root_dir/setup.sh" \

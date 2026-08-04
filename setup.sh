@@ -658,7 +658,8 @@ download_agent_release() {
     codesign --verify --strict --verbose=2 "$candidate"
     codesign -vvvv -R="notarized" --check-notarization "$candidate"
     command_exists lipo || die "lipo is required to verify the universal macOS notification agent"
-    lipo "$candidate" -verify_arch arm64 x86_64
+    lipo "$candidate" -verify_arch arm64
+    lipo "$candidate" -verify_arch x86_64
   fi
   downloaded_version="$("$candidate" version 2>/dev/null || true)"
   [ "$downloaded_version" = "$agent_release_version" ] || die "Downloaded notification-agent version does not match ${agent_release_version}"

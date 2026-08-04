@@ -115,7 +115,8 @@ jobs:
           cp LICENSE "$package_dir/LICENSE"
           cp -R notifications/third_party_licenses "$package_dir/THIRD_PARTY_LICENSES"
           "$package_dir/novascale-agent" version | grep -Fx "$VERSION"
-          lipo "$package_dir/novascale-agent" -verify_arch arm64 x86_64
+          lipo "$package_dir/novascale-agent" -verify_arch arm64
+          lipo "$package_dir/novascale-agent" -verify_arch x86_64
       - name: Import Developer ID identity
         shell: bash
         env:
