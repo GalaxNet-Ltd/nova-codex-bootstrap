@@ -8,7 +8,7 @@ AGENT_SERVICE_LABEL="dev.galaxnet.novascale.agent"
 AGENT_SERVICE_FILE="novascale-agent.service"
 DEFAULT_PORT="14500"
 DEFAULT_SCHEME="ws"
-DEFAULT_AGENT_VERSION="0.1.0-dev.1"
+DEFAULT_AGENT_VERSION="0.1.0-dev.2"
 AGENT_RELEASE_BASE_URL="https://github.com/GalaxNet-Ltd/nova-codex-bootstrap/releases/download"
 CONFIG_DIR="${HOME}/.codex"
 CONFIG_FILE="${CONFIG_DIR}/novascale-codex-host.env"
@@ -92,7 +92,7 @@ Options:
                         token staged for daemon-owned enrollment.
   --dev-agent           Install an unsigned local agent build from notifications/dist.
   --agent-binary <path> Install this prebuilt novascale-agent binary.
-  --agent-version <ver> Download this pinned agent release. Default: 0.1.0-dev.1.
+  --agent-version <ver> Download this pinned agent release. Default: 0.1.0-dev.2.
   --no-hook-install     Install the agent without modifying Codex hooks.json.
   --no-notifications    Leave any notification-agent installation unchanged.
   --help                Show this help.

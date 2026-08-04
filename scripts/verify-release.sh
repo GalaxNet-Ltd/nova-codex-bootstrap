@@ -149,7 +149,7 @@ cat >"$enrollment_agent" <<'EOF'
 set -eu
 case "${1:-}" in
   version)
-    printf '%s\n' '0.1.0-dev.1'
+    printf '%s\n' '0.1.0-dev.2'
     ;;
   init)
     shift
@@ -193,7 +193,7 @@ mkdir -p "$release_fixture_dir" "$release_package_dir/THIRD_PARTY_LICENSES" "$do
 cp "$enrollment_agent" "$release_package_dir/novascale-agent"
 cp "$root_dir/LICENSE" "$release_package_dir/LICENSE"
 cp -R "$root_dir/notifications/third_party_licenses/." "$release_package_dir/THIRD_PARTY_LICENSES/"
-release_archive="novascale-agent_0.1.0-dev.1_linux_amd64.tar.gz"
+release_archive="novascale-agent_0.1.0-dev.2_linux_amd64.tar.gz"
 tar -C "$release_package_dir" -czf "$release_fixture_dir/$release_archive" \
   novascale-agent LICENSE THIRD_PARTY_LICENSES
 if command -v shasum >/dev/null 2>&1; then
@@ -310,15 +310,22 @@ HOME="$enrollment_home" PATH="$download_test_path" NOVASCALE_TEST_AGENT_LOG="$en
   --notification-setup-token-file "$setup_token_file" \
   >"$temporary_root/enrollment-output" \
   2>"$temporary_root/enrollment-error"
-grep -q 'Downloading signed NovaScale notification agent 0.1.0-dev.1 for linux-amd64.' "$temporary_root/enrollment-output"
+grep -q 'Downloading signed NovaScale notification agent 0.1.0-dev.2 for linux-amd64.' "$temporary_root/enrollment-output"
 test "$(grep -c '^SHA256SUMS$' "$release_download_log")" -eq 1
 test "$(grep -c "^${release_archive}$" "$release_download_log")" -eq 1
 cmp -s "$enrollment_agent" "$enrollment_home/.local/bin/novascale-agent"
 grep -q '^init endpoint and setup-token path received$' "$enrollment_log"
 staged_setup_token="$enrollment_home/.config/novascale-agent/pending-setup-token"
 cmp -s "$setup_token_file" "$staged_setup_token"
-staged_mode="$(stat -f '%Lp' "$staged_setup_token" 2>/dev/null || stat -c '%a' "$staged_setup_token")"
-test "$staged_mode" = "600"
+if staged_mode="$(stat -c '%a' "$staged_setup_token" 2>/dev/null)"; then
+  :
+else
+  staged_mode="$(stat -f '%Lp' "$staged_setup_token")"
+fi
+if [ "$staged_mode" != "600" ]; then
+  printf 'pending setup-token mode is %s, expected 600\n' "$staged_mode" >&2
+  exit 1
+fi
 if grep -F "$setup_token" \
   "$enrollment_home/.config/novascale-agent/config.json" \
   "$enrollment_log" \

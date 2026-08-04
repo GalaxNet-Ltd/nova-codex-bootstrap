@@ -49,7 +49,7 @@ token 暫存到 agent 自己的 `0600` 檔案，不執行網路註冊；呼叫�
 成功或永久拒絕後刪除自己的 token 檔案。重新部署已註冊或仍在註冊的主機
 會保留原有身分。
 
-目前除錯流程固定使用 agent `0.1.0-dev.1`。bootstrap 會從對應的 GitHub
+目前除錯流程固定使用 agent `0.1.0-dev.2`。bootstrap 會從對應的 GitHub
 Release 下載目前平台的封裝和 `SHA256SUMS`，驗證摘要、封裝路徑與內嵌版本；
 macOS 還會驗證 Developer ID 簽章、Gatekeeper 評估及 universal 架構。
 
