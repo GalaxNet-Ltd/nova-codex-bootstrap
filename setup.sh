@@ -8,7 +8,7 @@ AGENT_SERVICE_LABEL="dev.galaxnet.novascale.agent"
 AGENT_SERVICE_FILE="novascale-agent.service"
 DEFAULT_PORT="14500"
 DEFAULT_SCHEME="ws"
-DEFAULT_AGENT_VERSION="0.1.0-dev.2"
+DEFAULT_AGENT_VERSION="0.1.0-dev.3"
 AGENT_RELEASE_BASE_URL="https://github.com/GalaxNet-Ltd/nova-codex-bootstrap/releases/download"
 CONFIG_DIR="${HOME}/.codex"
 CONFIG_FILE="${CONFIG_DIR}/novascale-codex-host.env"
@@ -92,7 +92,7 @@ Options:
                         token staged for daemon-owned enrollment.
   --dev-agent           Install an unsigned local agent build from notifications/dist.
   --agent-binary <path> Install this prebuilt novascale-agent binary.
-  --agent-version <ver> Download this pinned agent release. Default: 0.1.0-dev.2.
+  --agent-version <ver> Download this pinned agent release. Default: 0.1.0-dev.3.
   --no-hook-install     Install the agent without modifying Codex hooks.json.
   --no-notifications    Leave any notification-agent installation unchanged.
   --help                Show this help.
@@ -647,9 +647,8 @@ download_agent_release() {
   chmod 755 "$candidate"
   if [ "$agent_os" = "darwin" ]; then
     command_exists codesign || die "codesign is required to verify the macOS notification agent"
-    command_exists spctl || die "spctl is required to assess the macOS notification agent"
     codesign --verify --strict --verbose=2 "$candidate"
-    spctl --assess --type execute --verbose=2 "$candidate"
+    codesign -vvvv -R="notarized" --check-notarization "$candidate"
     command_exists lipo || die "lipo is required to verify the universal macOS notification agent"
     lipo "$candidate" -verify_arch arm64 x86_64
   fi

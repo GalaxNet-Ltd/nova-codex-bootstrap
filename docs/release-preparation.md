@@ -115,16 +115,19 @@ keychain, and removes both after signing. It parses the `notarytool` result and
 fails unless the terminal status is exactly `Accepted`. Apple supports
 notarizing a ZIP but does not support stapling a ticket directly to the ZIP, so
 the workflow relies on the accepted online notarization ticket and verifies
-the inner executable's Developer ID signature before upload.
+the inner executable's Developer ID signature before upload. Because the agent
+is a standalone executable rather than an app bundle, both release and
+bootstrap use `codesign --check-notarization` to verify that ticket.
 
-Automatic bootstrap installation pins `0.1.0-dev.2` for the debug cycle. It
+Automatic bootstrap installation pins `0.1.0-dev.3` for the debug cycle. It
 downloads only from this repository's HTTPS GitHub Release URL, verifies the
 matching `SHA256SUMS` entry, rejects unexpected archive paths and links,
 requires the embedded version to match, and fails closed instead of falling
 back to a repository build or unsigned file. macOS also requires Developer ID
-verification, Gatekeeper assessment, and both universal architectures before
-execution. `--agent-version` supports a different explicitly selected release;
-an already installed matching version is usable offline.
+signature and notarization-ticket verification, plus both universal
+architectures, before execution. `--agent-version` supports a different
+explicitly selected release; an already installed matching version is usable
+offline.
 
 Keep `--dev-agent` available only as an explicit developer path.
 
@@ -136,7 +139,7 @@ already-enrolled hosts sending signed events.
 
 1. Publish the backward-compatible wrapper and agent source.
 2. Validate default bootstrap with an existing app release.
-3. Tag this commit as `agent-v0.1.0-dev.2` and publish the signed host-agent prerelease.
+3. Tag this commit as `agent-v0.1.0-dev.3` and publish the signed host-agent prerelease.
 4. Point the debug app bootstrap sheet at this branch, leave notifications on
    by default, and validate app-issued setup-token enrollment and lifecycle
    notifications with a test app.

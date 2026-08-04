@@ -213,7 +213,7 @@ jobs:
             exit 1
           fi
           echo "notarization status: Accepted"
-          spctl --assess --type execute --verbose=2 "$binary"
+          codesign -vvvv -R="notarized" --check-notarization "$binary"
       - name: Remove signing material
         if: always()
         shell: bash

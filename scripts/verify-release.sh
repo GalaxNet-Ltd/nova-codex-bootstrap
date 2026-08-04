@@ -149,7 +149,7 @@ cat >"$enrollment_agent" <<'EOF'
 set -eu
 case "${1:-}" in
   version)
-    printf '%s\n' '0.1.0-dev.2'
+    printf '%s\n' '0.1.0-dev.3'
     ;;
   init)
     shift
@@ -193,7 +193,7 @@ mkdir -p "$release_fixture_dir" "$release_package_dir/THIRD_PARTY_LICENSES" "$do
 cp "$enrollment_agent" "$release_package_dir/novascale-agent"
 cp "$root_dir/LICENSE" "$release_package_dir/LICENSE"
 cp -R "$root_dir/notifications/third_party_licenses/." "$release_package_dir/THIRD_PARTY_LICENSES/"
-release_archive="novascale-agent_0.1.0-dev.2_linux_amd64.tar.gz"
+release_archive="novascale-agent_0.1.0-dev.3_linux_amd64.tar.gz"
 tar -C "$release_package_dir" -czf "$release_fixture_dir/$release_archive" \
   novascale-agent LICENSE THIRD_PARTY_LICENSES
 if command -v shasum >/dev/null 2>&1; then
@@ -310,7 +310,7 @@ HOME="$enrollment_home" PATH="$download_test_path" NOVASCALE_TEST_AGENT_LOG="$en
   --notification-setup-token-file "$setup_token_file" \
   >"$temporary_root/enrollment-output" \
   2>"$temporary_root/enrollment-error"
-grep -q 'Downloading signed NovaScale notification agent 0.1.0-dev.2 for linux-amd64.' "$temporary_root/enrollment-output"
+grep -q 'Downloading signed NovaScale notification agent 0.1.0-dev.3 for linux-amd64.' "$temporary_root/enrollment-output"
 test "$(grep -c '^SHA256SUMS$' "$release_download_log")" -eq 1
 test "$(grep -c "^${release_archive}$" "$release_download_log")" -eq 1
 cmp -s "$enrollment_agent" "$enrollment_home/.local/bin/novascale-agent"
@@ -367,6 +367,16 @@ if command -v go >/dev/null 2>&1; then
 fi
 
 sh "$root_dir/scripts/test-notification-agent-upgrade.sh"
+
+test "$(grep -c -- '--check-notarization' "$root_dir/setup.sh")" -eq 1
+test "$(grep -c -- '--check-notarization' "$root_dir/.github/workflows/agent-release.yml")" -eq 1
+if grep -q -- 'spctl --assess' \
+  "$root_dir/setup.sh" \
+  "$root_dir/.github/workflows/agent-release.yml"
+then
+  printf 'standalone macOS agent incorrectly uses an app-bundle Gatekeeper assessment\n' >&2
+  exit 1
+fi
 
 if command -v rg >/dev/null 2>&1; then
   private_key_pattern='-----BEGIN (RSA |EC |OPENSSH )?PRIVATE'" KEY"'-----'

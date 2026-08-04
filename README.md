@@ -180,13 +180,13 @@ not wait on a registration network request:
   --notification-setup-token-file /path/to/protected/setup-token
 ```
 
-The debug release currently pins agent `0.1.0-dev.2`. Use
+The debug release currently pins agent `0.1.0-dev.3`. Use
 `--agent-version <version>` to select another published immutable release.
 Bootstrap downloads the exact platform archive and `SHA256SUMS` from the
 corresponding `agent-v<version>` GitHub Release, rejects unexpected archive
 paths or links, verifies the SHA-256 digest and embedded version, and never
 falls back to an unsigned build. macOS additionally requires a valid Developer
-ID signature, Gatekeeper assessment, and the expected universal architectures
+ID signature, notarization ticket, and the expected universal architectures
 before the binary is executed. A matching installed version is reused without
 a network download.
 
