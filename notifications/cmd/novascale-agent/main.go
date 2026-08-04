@@ -41,6 +41,8 @@ func main() {
 		err = runStatus(os.Args[2:])
 	case "registration-state":
 		err = runRegistrationState(os.Args[2:])
+	case "host-id":
+		err = runHostID(os.Args[2:])
 	case "daemon-version":
 		err = runDaemonVersion(os.Args[2:])
 	case "app-server":
@@ -368,6 +370,22 @@ func runRegistrationState(arguments []string) error {
 	return nil
 }
 
+func runHostID(arguments []string) error {
+	paths, err := agent.DefaultPaths()
+	if err != nil {
+		return err
+	}
+	if len(arguments) != 0 {
+		return fmt.Errorf("host-id takes no arguments")
+	}
+	config, err := agent.LoadConfig(paths.ConfigFile)
+	if err != nil {
+		return err
+	}
+	fmt.Println(config.HostID)
+	return nil
+}
+
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: novascale-agent <init|serve|hook|status|registration-state|daemon-version|hooks|app-server|version>")
+	fmt.Fprintln(os.Stderr, "usage: novascale-agent <init|serve|hook|status|registration-state|host-id|daemon-version|hooks|app-server|version>")
 }

@@ -180,12 +180,26 @@ read_token() {
   tr -d '\r\n' < "$TOKEN_FILE"
 }
 
+read_notification_host_id() {
+  [ -x "$AGENT_PATH" ] || return 1
+  notification_host_id="$("$AGENT_PATH" host-id 2>/dev/null || true)"
+  if [ -z "$notification_host_id" ]; then
+    notification_host_id="$("$AGENT_PATH" status 2>/dev/null | awk '$1 == "Host" && $2 == "ID:" { print $3; exit }' || true)"
+  fi
+  printf '%s\n' "$notification_host_id" | grep -Eq '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$' || return 1
+  printf '%s' "$notification_host_id"
+}
+
 make_pairing_uri() {
   token="$(read_token)"
   esc_name="$(json_escape "$name")"
   esc_host="$(json_escape "$host")"
   esc_token="$(json_escape "$token")"
-  payload="$(printf '{"type":"novascale-codex-host","version":1,"name":"%s","host":"%s","port":%s,"scheme":"%s","auth":{"mode":"capability-token","token":"%s"}}' "$esc_name" "$esc_host" "$port" "$DEFAULT_SCHEME" "$esc_token" | base64url_encode)"
+  notification_field=""
+  if notification_host_id="$(read_notification_host_id)"; then
+    notification_field=",\"notification\":{\"hostId\":\"$(json_escape "$notification_host_id")\"}"
+  fi
+  payload="$(printf '{"type":"novascale-codex-host","version":1,"name":"%s","host":"%s","port":%s,"scheme":"%s","auth":{"mode":"capability-token","token":"%s"}%s}' "$esc_name" "$esc_host" "$port" "$DEFAULT_SCHEME" "$esc_token" "$notification_field" | base64url_encode)"
   printf 'novascale-codex://import?payload=%s\n' "$payload"
 }
 
@@ -1004,12 +1018,26 @@ read_token() {
   tr -d '\r\n' < "$token_file"
 }
 
+read_notification_host_id() {
+  [ -x "$AGENT_PATH" ] || return 1
+  notification_host_id="$("$AGENT_PATH" host-id 2>/dev/null || true)"
+  if [ -z "$notification_host_id" ]; then
+    notification_host_id="$("$AGENT_PATH" status 2>/dev/null | awk '$1 == "Host" && $2 == "ID:" { print $3; exit }' || true)"
+  fi
+  printf '%s\n' "$notification_host_id" | grep -Eq '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$' || return 1
+  printf '%s' "$notification_host_id"
+}
+
 make_pairing_uri() {
   token="$(read_token)"
   esc_name="$(json_escape "$name")"
   esc_host="$(json_escape "$host")"
   esc_token="$(json_escape "$token")"
-  payload="$(printf '{"type":"novascale-codex-host","version":1,"name":"%s","host":"%s","port":%s,"scheme":"%s","auth":{"mode":"capability-token","token":"%s"}}' "$esc_name" "$esc_host" "$port" "$scheme" "$esc_token" | base64url_encode)"
+  notification_field=""
+  if notification_host_id="$(read_notification_host_id)"; then
+    notification_field=",\"notification\":{\"hostId\":\"$(json_escape "$notification_host_id")\"}"
+  fi
+  payload="$(printf '{"type":"novascale-codex-host","version":1,"name":"%s","host":"%s","port":%s,"scheme":"%s","auth":{"mode":"capability-token","token":"%s"}%s}' "$esc_name" "$esc_host" "$port" "$scheme" "$esc_token" "$notification_field" | base64url_encode)"
   printf 'novascale-codex://import?payload=%s\n' "$payload"
 }
 

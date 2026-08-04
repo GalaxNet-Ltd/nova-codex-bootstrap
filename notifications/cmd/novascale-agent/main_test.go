@@ -3,12 +3,55 @@ package main
 import (
 	"bytes"
 	"encoding/base64"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/GalaxNet-Ltd/nova-codex-bootstrap/internal/agent"
 )
+
+func TestHostIDPrintsOnlyConfiguredPublicIdentifier(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	paths, err := agent.DefaultPaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const hostID = "11111111-2222-4333-8444-555555555555"
+	if err := agent.SaveConfig(paths.ConfigFile, agent.Config{
+		Version:           1,
+		HostID:            hostID,
+		Endpoint:          "https://notify.example.test",
+		RegistrationState: agent.RegistrationActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	readEnd, writeEnd, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalStdout := os.Stdout
+	os.Stdout = writeEnd
+	runError := runHostID(nil)
+	_ = writeEnd.Close()
+	os.Stdout = originalStdout
+	output, err := io.ReadAll(readEnd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = readEnd.Close()
+
+	if runError != nil {
+		t.Fatal(runError)
+	}
+	if string(output) != hostID+"\n" {
+		t.Fatalf("host-id output = %q", string(output))
+	}
+}
 
 func TestInitOnlyStagesEnrollmentWithoutNetwork(t *testing.T) {
 	home := t.TempDir()
