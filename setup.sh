@@ -123,9 +123,8 @@ find_codex_bin() {
   fi
 
   for candidate in \
-    "$HOME"/.nvm/versions/node/*/bin/codex \
-    "$HOME"/.npm-global/bin/codex \
     "$HOME"/.local/bin/codex \
+    "$HOME"/.npm-global/bin/codex \
     "$HOME"/bin/codex \
     /opt/homebrew/bin/codex \
     /usr/local/bin/codex
@@ -135,6 +134,15 @@ find_codex_bin() {
       return 0
     fi
   done
+
+  nvm_node_root="$HOME/.nvm/versions/node"
+  if [ -d "$nvm_node_root" ]; then
+    candidate="$(find "$nvm_node_root" -path '*/bin/codex' -print 2>/dev/null | head -n 1)"
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  fi
 
   return 1
 }

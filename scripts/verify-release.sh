@@ -64,6 +64,24 @@ case "$(uname -s)" in
   *) printf 'unsupported release-test host OS\n' >&2; exit 1 ;;
 esac
 
+official_home="$temporary_root/official-home"
+official_stub_dir="$temporary_root/official-bin"
+mkdir -p "$official_home/.local/bin" "$official_stub_dir"
+ln -s "$true_binary" "$official_home/.local/bin/codex"
+ln -s "$true_binary" "$official_stub_dir/launchctl"
+ln -s "$true_binary" "$official_stub_dir/systemctl"
+official_path="$official_stub_dir:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+HOME="$official_home" PATH="$official_path" "$root_dir/setup.sh" \
+  --listen 127.0.0.1 \
+  --host 127.0.0.1 \
+  --port "$((test_port + 10))" \
+  --no-start \
+  --no-qr \
+  >"$temporary_root/official-output" \
+  2>"$temporary_root/official-error"
+grep -q "NOVASCALE_CODEX_BIN=\"$official_home/.local/bin/codex\"" \
+  "$official_home/.codex/novascale-codex-host.env"
+
 cp "$default_home/.codex/novascale-app-server-token" "$temporary_root/token-before-redeploy"
 HOME="$default_home" PATH="$test_path" "$root_dir/setup.sh" \
   --listen 127.0.0.1 \
