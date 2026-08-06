@@ -122,7 +122,7 @@ the inner executable's Developer ID signature before upload. Because the agent
 is a standalone executable rather than an app bundle, both release and
 bootstrap use `codesign --check-notarization` to verify that ticket.
 
-Automatic bootstrap installation pins `0.1.0-dev.5` for the debug cycle. It
+Automatic bootstrap installation pins the stable `0.1.1` release. It
 downloads only from this repository's HTTPS GitHub Release URL, verifies the
 matching `SHA256SUMS` entry, rejects unexpected archive paths and links,
 requires the embedded version to match, and fails closed instead of falling
@@ -142,7 +142,7 @@ already-enrolled hosts sending signed events.
 
 1. Publish the backward-compatible wrapper and agent source.
 2. Validate default bootstrap with an existing app release.
-3. Tag this commit as `agent-v0.1.0-dev.5` and publish the signed host-agent prerelease.
+3. Tag the agent commit as `agent-v0.1.1` and publish the signed host-agent release.
 4. Point the debug app bootstrap sheet at this branch, leave notifications on
    by default, and validate app-issued setup-token enrollment and lifecycle
    notifications with a test app.

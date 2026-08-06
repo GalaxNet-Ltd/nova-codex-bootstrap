@@ -167,7 +167,7 @@ cat >"$enrollment_agent" <<'EOF'
 set -eu
 case "${1:-}" in
   version)
-    printf '%s\n' '0.1.0-dev.5'
+    printf '%s\n' '0.1.1'
     ;;
   init)
     shift
@@ -211,7 +211,7 @@ mkdir -p "$release_fixture_dir" "$release_package_dir/THIRD_PARTY_LICENSES" "$do
 cp "$enrollment_agent" "$release_package_dir/novascale-agent"
 cp "$root_dir/LICENSE" "$release_package_dir/LICENSE"
 cp -R "$root_dir/notifications/third_party_licenses/." "$release_package_dir/THIRD_PARTY_LICENSES/"
-release_archive="novascale-agent_0.1.0-dev.5_linux_amd64.tar.gz"
+release_archive="novascale-agent_0.1.1_linux_amd64.tar.gz"
 tar -C "$release_package_dir" -czf "$release_fixture_dir/$release_archive" \
   novascale-agent LICENSE THIRD_PARTY_LICENSES
 if command -v shasum >/dev/null 2>&1; then
@@ -328,7 +328,7 @@ HOME="$enrollment_home" PATH="$download_test_path" NOVASCALE_TEST_AGENT_LOG="$en
   --notification-setup-token-file "$setup_token_file" \
   >"$temporary_root/enrollment-output" \
   2>"$temporary_root/enrollment-error"
-grep -q 'Downloading signed NovaScale notification agent 0.1.0-dev.5 for linux-amd64.' "$temporary_root/enrollment-output"
+grep -q 'Downloading signed NovaScale notification agent 0.1.1 for linux-amd64.' "$temporary_root/enrollment-output"
 grep -q '^Finish notification setup:$' "$temporary_root/enrollment-output"
 grep -q '^     novascale-codex restart$' "$temporary_root/enrollment-output"
 test "$(grep -c '^SHA256SUMS$' "$release_download_log")" -eq 1

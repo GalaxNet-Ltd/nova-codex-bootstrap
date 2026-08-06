@@ -173,7 +173,7 @@ App 将 token 写入受保护的 `0600` 临时文件，bootstrap 只在本地暂
 agent daemon 随后在后台注册并自动重试。注册完成或被永久拒绝后，agent 会
 删除自己的 token 副本。
 
-当前调试流程固定使用 agent `0.1.0-dev.5`。bootstrap 会校验平台归档、
+当前 bootstrap 固定使用稳定版 agent `0.1.1`。bootstrap 会校验平台归档、
 `SHA256SUMS`、归档路径和内嵌版本，且不会回退到未签名构建。macOS 还会验证
 Developer ID 签名、公证票据和预期的 universal 架构。
 

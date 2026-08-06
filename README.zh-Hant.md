@@ -174,7 +174,7 @@ App 將 token 寫入受保護的 `0600` 暫存檔，bootstrap 只在本機暫存
 agent daemon 隨後在背景註冊並自動重試。註冊完成或遭永久拒絕後，agent 會
 刪除自己的 token 副本。
 
-目前除錯流程固定使用 agent `0.1.0-dev.5`。bootstrap 會驗證平台封裝、
+目前 bootstrap 固定使用穩定版 agent `0.1.1`。bootstrap 會驗證平台封裝、
 `SHA256SUMS`、封裝路徑和內嵌版本，且不會回退到未簽署建置。macOS 還會驗證
 Developer ID 簽章、公證票據及預期的 universal 架構。
 
