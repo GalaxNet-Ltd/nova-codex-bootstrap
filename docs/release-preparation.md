@@ -3,24 +3,26 @@
 This repository has two independently enabled host components:
 
 1. the established Codex App Server wrapper; and
-2. the optional notification agent.
+2. the notification agent, enabled by default when the app supplies enrollment
+   credentials.
 
-Publishing the agent source must not turn notifications on for existing users.
-The wrapper-only bootstrap remains the compatibility baseline.
+Publishing the agent source must not break existing users. Wrapper-only setup
+remains the compatibility fallback when an older app or manual invocation does
+not supply enrollment credentials.
 
 ## Compatibility contract
 
 | App and host combination | Required behavior |
 | --- | --- |
-| Existing app + default bootstrap | Pairing and Codex access continue unchanged; no agent or hooks are installed. |
+| Existing app + default bootstrap | Pairing and Codex access continue unchanged; missing enrollment credentials fall back to wrapper-only setup. |
 | Existing app + notification-capable source | Existing host operations continue; notifications remain disabled unless the host user opts in. |
 | Updated app + wrapper-only host | Codex access works; the app reports remote notifications as unavailable for that host. |
 | Updated app + opted-in host | The agent observes trusted hooks and uploads minimized, signed lifecycle events. |
-| Debug app + new host | Notifications default on in the app sheet; the user can choose the lean `--no-notifications` path. |
+| Updated app + new host | Host notification support defaults on for every user; the user can choose the lean `--no-notifications` path. Remote delivery remains a separate Pro subscription setting. |
 
-The default invocation must continue to pass `scripts/verify-release.sh`. It
-must not require notification enrollment, an endpoint, hooks, or an agent
-binary:
+The default invocation must continue to pass `scripts/verify-release.sh`. When
+no enrollment inputs are available, it must fall back safely without requiring
+an endpoint, hooks, or an agent binary:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/GalaxNet-Ltd/nova-codex-bootstrap/refs/heads/main/setup.sh | sh
@@ -35,9 +37,10 @@ On a disposable Linux VM with no NovaScale files in the test user's home:
 ./setup.sh
 ```
 
-Verify that only the wrapper service is installed, no notification agent state
-or hooks exist, existing app pairing still works, prompting and approvals are
-unchanged, and uninstall removes the wrapper service.
+Verify that setup reports the missing app-provided enrollment credentials, only
+the wrapper service is installed, no notification agent state or hooks exist,
+existing app pairing still works, prompting and approvals are unchanged, and
+uninstall removes the wrapper service.
 
 After publishing the pinned prerelease, run notification validation separately:
 
@@ -119,7 +122,7 @@ the inner executable's Developer ID signature before upload. Because the agent
 is a standalone executable rather than an app bundle, both release and
 bootstrap use `codesign --check-notarization` to verify that ticket.
 
-Automatic bootstrap installation pins `0.1.0-dev.4` for the debug cycle. It
+Automatic bootstrap installation pins `0.1.0-dev.5` for the debug cycle. It
 downloads only from this repository's HTTPS GitHub Release URL, verifies the
 matching `SHA256SUMS` entry, rejects unexpected archive paths and links,
 requires the embedded version to match, and fails closed instead of falling
@@ -139,7 +142,7 @@ already-enrolled hosts sending signed events.
 
 1. Publish the backward-compatible wrapper and agent source.
 2. Validate default bootstrap with an existing app release.
-3. Tag this commit as `agent-v0.1.0-dev.4` and publish the signed host-agent prerelease.
+3. Tag this commit as `agent-v0.1.0-dev.5` and publish the signed host-agent prerelease.
 4. Point the debug app bootstrap sheet at this branch, leave notifications on
    by default, and validate app-issued setup-token enrollment and lifecycle
    notifications with a test app.

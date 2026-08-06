@@ -8,7 +8,7 @@ AGENT_SERVICE_LABEL="dev.galaxnet.novascale.agent"
 AGENT_SERVICE_FILE="novascale-agent.service"
 DEFAULT_PORT="14500"
 DEFAULT_SCHEME="ws"
-DEFAULT_AGENT_VERSION="0.1.0-dev.4"
+DEFAULT_AGENT_VERSION="0.1.0-dev.5"
 AGENT_RELEASE_BASE_URL="https://github.com/GalaxNet-Ltd/nova-codex-bootstrap/releases/download"
 CONFIG_DIR="${HOME}/.codex"
 CONFIG_FILE="${CONFIG_DIR}/novascale-codex-host.env"
@@ -50,7 +50,8 @@ no_start=0
 print_only=0
 no_qr=0
 assume_yes=0
-notification_requested=0
+notification_requested=1
+notification_setup_explicit=0
 notification_disabled=0
 notification_endpoint=""
 notification_setup_token_file=""
@@ -84,7 +85,8 @@ Options:
   --no-qr               Print the pairing URI without using qrencode.
   --yes                 Reconfigure an existing setup without prompting.
   --enable-notifications
-                        Install and configure the notification agent.
+                        Install and configure the notification agent. This is
+                        the default when enrollment inputs are available.
   --notification-endpoint <url>
                         Notification backend URL used for first enrollment.
   --notification-setup-token-file <path>
@@ -92,9 +94,10 @@ Options:
                         token staged for daemon-owned enrollment.
   --dev-agent           Install an unsigned local agent build from notifications/dist.
   --agent-binary <path> Install this prebuilt novascale-agent binary.
-  --agent-version <ver> Download this pinned agent release. Default: 0.1.0-dev.4.
+  --agent-version <ver> Download this pinned agent release. Default: 0.1.0-dev.5.
   --no-hook-install     Install the agent without modifying Codex hooks.json.
-  --no-notifications    Leave any notification-agent installation unchanged.
+  --no-notifications    Skip notification-agent setup and leave any existing
+                        notification-agent installation unchanged.
   --help                Show this help.
 
 When a 100.64.0.0/10 interface address is detected, the setup offers an
@@ -925,6 +928,16 @@ preflight_notification_agent() {
   if [ "$notification_requested" -eq 0 ] && [ ! -f "$AGENT_CONFIG_FILE" ]; then
     return 0
   fi
+  if [ ! -f "$AGENT_CONFIG_FILE" ] && \
+     { [ -z "$notification_endpoint" ] || [ -z "$notification_setup_token_file" ]; }; then
+    if [ "$notification_setup_explicit" -eq 0 ]; then
+      notice "Notification setup is enabled by default, but app-provided enrollment credentials are unavailable; continuing with wrapper-only setup."
+      notification_requested=0
+      return 0
+    fi
+    [ -n "$notification_endpoint" ] || die "--notification-endpoint is required for first notification-agent enrollment"
+    die "--notification-setup-token-file is required for first notification-agent enrollment"
+  fi
   find_agent_binary
   source_path="$resolved_agent_binary"
   [ -n "$source_path" ] || die "Notification-agent release could not be resolved"
@@ -1417,29 +1430,34 @@ while [ "$#" -gt 0 ]; do
       ;;
     --enable-notifications)
       notification_requested=1
+      notification_setup_explicit=1
       shift
       ;;
     --notification-endpoint)
       [ "$#" -ge 2 ] || die "--notification-endpoint requires a value"
       notification_endpoint="$2"
       notification_requested=1
+      notification_setup_explicit=1
       shift 2
       ;;
     --notification-setup-token-file)
       [ "$#" -ge 2 ] || die "--notification-setup-token-file requires a value"
       notification_setup_token_file="$2"
       notification_requested=1
+      notification_setup_explicit=1
       shift 2
       ;;
     --dev-agent)
       dev_agent=1
       notification_requested=1
+      notification_setup_explicit=1
       shift
       ;;
     --agent-binary)
       [ "$#" -ge 2 ] || die "--agent-binary requires a value"
       agent_binary_source="$2"
       notification_requested=1
+      notification_setup_explicit=1
       shift 2
       ;;
     --agent-version)
@@ -1447,6 +1465,7 @@ while [ "$#" -gt 0 ]; do
       agent_release_version="$2"
       agent_version_set=1
       notification_requested=1
+      notification_setup_explicit=1
       shift 2
       ;;
     --no-hook-install)
@@ -1455,6 +1474,7 @@ while [ "$#" -gt 0 ]; do
       ;;
     --no-notifications)
       notification_disabled=1
+      notification_requested=0
       shift
       ;;
     --help|-h)
@@ -1467,7 +1487,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-if [ "$notification_requested" -eq 1 ] && [ "$notification_disabled" -eq 1 ]; then
+if [ "$notification_setup_explicit" -eq 1 ] && [ "$notification_disabled" -eq 1 ]; then
   die "--no-notifications cannot be combined with notification setup options"
 fi
 if [ "$dev_agent" -eq 1 ] && [ -n "$agent_binary_source" ]; then

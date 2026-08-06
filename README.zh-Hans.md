@@ -1,8 +1,10 @@
 # NovaScale Codex Host
 
+[English](README.md) | [简体中文](README.zh-Hans.md) | [繁體中文](README.zh-Hant.md)
+
 NovaScale Codex Host 是 NovaScale Codex 集成的主机端设置工具。它会配置用户级 `codex app-server` 服务，创建 capability token，并打印可导入 NovaScale iOS 的配对 URI。
 
-该设置不会安装第三方软件。它使用主机上已经安装好的官方 `codex` 命令，以及用户已有的 Tailscale 网络。
+App Server wrapper 使用主机上已经安装好的官方 `codex` 命令和用户已有的 Tailscale 网络。启用远程通知时，设置脚本还会从固定版本的已签名 Release 安装 NovaScale 的开源通知 agent。
 
 ## 设置
 
@@ -30,28 +32,27 @@ curl -fsSL https://raw.githubusercontent.com/GalaxNet-Ltd/nova-codex-bootstrap/r
 ./setup.sh --yes
 ```
 
+重新部署会保留现有 capability token，因此已经配对的 App 可以继续使用。
+只有显式传入 `--rotate-token`，或不存在可用 token 时，设置脚本才会更换
+token。
+
 ### 向后兼容性
 
-上面的默认命令仍然只安装稳定的 App Server wrapper。它不会安装通知
-agent、修改 Codex hooks，也不要求通知后端。包括当前 App Store 版本在内
-的旧版 NovaScale，仍可按原方式安装并使用 Codex 主机。
+所有用户的主机通知支持都默认开启。新版 App 会提供通知后端地址和短时
+setup-token 文件，bootstrap 随后会自动下载并注册固定版本的已签名 agent。
+这只会让主机具备通知能力，不会启用付费的远程通知投递。远程推送需要在
+Codex 设置中单独启用，并且需要 Pro 订阅。关闭主机通知支持会传入
+`--no-notifications`，让主机保持精简的 wrapper-only 安装。
 
-通知功能仍是附加功能。新版 App 的新主机页面可以默认开启通知；传入通知
-后端地址和 setup-token 文件时，bootstrap 会自动下载固定版本的已签名
-agent。用户关闭通知开关时，App 应省略注册参数并传入
-`--no-notifications`。旧版 App 和上面的纯 wrapper 命令不会被静默改变。
+旧版 App 和手动调用不会提供注册凭据。此时设置脚本会提示通知注册不可用，
+并继续完成 wrapper-only 安装，而不会失败。也可以显式选择该路径：
 
-通知 agent 的首次注册还需要由 App/后端签发的短时、一次性 setup
-token。token 必须放在受保护的 `0600` 临时文件中，并通过
-`--notification-setup-token-file` 传入。bootstrap 只把注册任务和 token
-暂存到 agent 自己的 `0600` 文件中，不执行网络注册；调用方随后即可删除
-原临时文件。agent daemon 会在后台注册、对临时故障自动重试，并在成功或
-永久拒绝后删除自己的 token 文件。重新部署已注册或仍在注册的主机会保留
-原有身份。
+```sh
+./setup.sh --no-notifications
+```
 
-当前调试流程固定使用 agent `0.1.0-dev.4`。bootstrap 会从对应的 GitHub
-Release 下载当前平台的归档和 `SHA256SUMS`，校验摘要、归档路径和内嵌版本；
-macOS 还会验证 Developer ID 签名、公证票据和 universal 架构。
+因此旧版 NovaScale 仍可继续使用 Codex 主机。对于在通知版 bootstrap 之前
+创建的主机，之后只需重新部署；不需要删除、修复或重新添加主机。
 
 ## 高级子网模式
 
@@ -110,16 +111,30 @@ novascale-codex rotate-token
 novascale-codex uninstall
 ```
 
-统一 helper 中始终会显示 `notification-*` 命令，但只有显式安装通知
-agent 后这些命令才可使用。
+统一 helper 中始终会提供 `notification-*` 命令；安装通知 agent 后这些
+命令才可使用。
 
 ## 文件
+
+App Server wrapper 会创建：
 
 ```text
 ~/.codex/novascale-codex-host.env
 ~/.codex/novascale-app-server-token
 ~/Library/LaunchAgents/dev.galaxnet.novascale.codex.plist
 ~/.config/systemd/user/novascale-codex.service
+```
+
+启用通知时还会创建或更新：
+
+```text
+~/.codex/hooks.json
+~/.local/bin/novascale-agent
+~/.config/novascale-agent/config.json
+~/.config/novascale-agent/host-key
+~/.local/state/novascale-agent/
+~/Library/LaunchAgents/dev.galaxnet.novascale.agent.plist
+~/.config/systemd/user/novascale-agent.service
 ```
 
 ## 仓库结构
@@ -133,8 +148,45 @@ agent 后这些命令才可使用。
 
 NovaScale Codex 配对信息在你的 Codex 主机上生成。它不会发送到 GalaxNet 或任何网站。NovaScale 会在本地导入该信息，并将 token 存储在 iOS Keychain 中。
 
-## 路线图
+## 保护隐私的通知标题
 
-基于 APNs 的推送通知正在通过 Codex hooks 和独立的仅出站 companion
-agent 开发。该 agent 不是代理，也不会进入权威 App Server/Tailscale
-连接路径。默认 wrapper-only 安装将继续兼容旧版 App。
+主机 agent 和通知后端都不会收到 thread 标题、prompt、assistant 回复、
+工具输入、命令、patch、工作目录或 transcript 路径。agent 只发送生命周期
+事件类型、时间戳，以及关联主机、thread、turn 和批准请求所需的非内容标识符。
+每个事件都会先由主机密钥签名，再上传到通知服务。
+
+APNs payload 只包含通用通知文案，以及不透明的 event、host、thread 和 turn
+标识符。NovaScale 会在设备受数据保护的 App Group 容器中保存一个小型、
+有时限的 host/thread 标识符到标题的映射。通知服务扩展在收到通知后使用这份
+本地映射补充标题；如果设备上没有对应标题，就显示通用通知。因此 thread
+标题不会经过通知后端或 APNs。通知后端会加密存储 APNs device token。
+
+## 通知 Agent
+
+仓库包含 NovaScale 独立通知旁路的开源主机 agent。`novascale-agent` 只观察
+`PermissionRequest` 和 `Stop`，丢弃未列入白名单的内容，在本地排队最小化
+事件，并上传签名事件。hook 始终返回 `{}`，不会替 Codex 作出任何决定。
+
+启用通知的 bootstrap 会下载适合主机平台的固定 agent Release。已经注册的
+agent 会保留现有身份。首次注册使用由 App 获取的短时、一次性 setup token；
+App 将 token 写入受保护的 `0600` 临时文件，bootstrap 只在本地暂存注册，
+agent daemon 随后在后台注册并自动重试。注册完成或被永久拒绝后，agent 会
+删除自己的 token 副本。
+
+当前调试流程固定使用 agent `0.1.0-dev.5`。bootstrap 会校验平台归档、
+`SHA256SUMS`、归档路径和内嵌版本，且不会回退到未签名构建。macOS 还会验证
+Developer ID 签名、公证票据和预期的 universal 架构。
+
+通知端点必须使用 HTTPS。只有通过 `localhost`、`127.0.0.0/8` 或 `::1`
+访问的 loopback 开发服务可以使用 HTTP。
+
+设置脚本只向现有 `~/.codex/hooks.json` 添加精确的 `novascale-agent hook`
+处理器。请在 Codex CLI 中使用 `/hooks` 检查并信任生成的 hook 定义。
+
+详见 [`docs/release-preparation.md`](docs/release-preparation.md) 和
+[`notifications/README.md`](notifications/README.md)。
+
+## 架构
+
+基于 APNs 的推送通知使用 Codex 生命周期 hooks 和独立、仅出站的 companion
+agent。该 agent 不是代理，也不会进入权威 App Server/Tailscale 连接路径。

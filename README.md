@@ -1,8 +1,10 @@
 # NovaScale Codex Host
 
+[English](README.md) | [简体中文](README.zh-Hans.md) | [繁體中文](README.zh-Hant.md)
+
 Host-side setup utility for NovaScale Codex integration. It configures a user-level `codex app-server` service, creates a capability token, and prints a pairing URI for NovaScale iOS.
 
-This setup does not install third-party software. It uses the official `codex` command already installed on the host and the user's existing Tailscale networking mesh.
+The wrapper uses the official `codex` command already installed on the host and the user's existing Tailscale networking mesh. When remote notifications are enabled, setup also installs NovaScale's open-source notification agent from a signed, pinned release.
 
 ## Setup
 
@@ -36,18 +38,26 @@ explicitly supplied or no usable token exists.
 
 ### Backward compatibility
 
-The default command above remains the stable, wrapper-only installation path.
-It does not install the notification agent, modify Codex hooks, or require a
-notification backend. Existing NovaScale versions—including the version
-currently available on the App Store—can continue to bootstrap and use Codex
-hosts exactly as before.
+Host notification support is enabled by default for every user. The updated
+app supplies the notification endpoint and a short-lived setup-token file, so
+bootstrap downloads and enrolls the pinned signed agent release automatically.
+This prepares the host but does not activate paid remote delivery. Remote Push
+is enabled separately in Codex Settings and requires a Pro subscription.
+Turning host notification support off passes `--no-notifications` and keeps the
+host on the lean wrapper-only path.
 
-Notifications remain an additive feature. The updated app's new-host sheet can
-default its notification toggle on; supplying the notification endpoint and
-setup-token file activates notification setup and downloads the pinned signed
-agent release automatically. Turning that toggle off must omit the enrollment
-inputs and pass `--no-notifications`. The raw wrapper-only command above remains
-unchanged for older apps and manual users.
+Older apps and manual invocations do not have enrollment credentials. In that
+case setup reports that notification enrollment is unavailable and continues
+with the wrapper-only installation instead of failing. To choose that path
+explicitly, use:
+
+```sh
+./setup.sh --no-notifications
+```
+
+This compatibility fallback lets existing NovaScale versions continue to use
+Codex hosts, while hosts created before notification-aware bootstrap can be
+redeployed later without deleting, repairing, or re-adding them.
 
 ## Advanced Subnet Mode
 
@@ -107,11 +117,11 @@ novascale-codex uninstall
 ```
 
 The `notification-*` commands are available in the unified helper but report
-an error until the optional notification agent has been installed.
+an error until the notification agent has been installed.
 
 ## Files
 
-The default wrapper-only installation creates:
+The wrapper installation creates:
 
 ```text
 ~/.codex/novascale-codex-host.env
@@ -120,8 +130,7 @@ The default wrapper-only installation creates:
 ~/.config/systemd/user/novascale-codex.service
 ```
 
-An explicitly enabled notification installation additionally creates or
-updates:
+A notification-enabled installation additionally creates or updates:
 
 ```text
 ~/.codex/hooks.json
@@ -143,6 +152,22 @@ If you clone this repository instead of running the setup via `curl`:
 ## Security
 
 NovaScale Codex pairing is generated on your Codex host. It is not sent to GalaxNet or any website. NovaScale imports it locally and stores the token in iOS Keychain.
+
+## Privacy-Preserving Notification Titles
+
+The host agent and notification backend never receive a thread title, prompt,
+assistant response, tool input, command, patc, working directory, or transcript
+path. The agent emits only the lifecycle event type, timestamp, and non-content
+identifiers needed to correlate the host, thread, turn, and approval request.
+Each event is signed by the host key before upload.
+
+The APNs payload contains a generic notification plus opaque event, host,
+thread, and turn identifiers. NovaScale keeps a small, time-limited mapping from
+host and thread identifiers to titles in the device's protected App Group
+container. Its notification service extension uses that local mapping to add a
+title after delivery. If no local title is available, the generic notification
+is shown. Thread titles therefore do not pass through the notification backend
+or APNs. APNs device tokens are encrypted at rest by the notification backend.
 
 ## Notification Agent Development
 
@@ -180,7 +205,7 @@ not wait on a registration network request:
   --notification-setup-token-file /path/to/protected/setup-token
 ```
 
-The debug release currently pins agent `0.1.0-dev.4`. Use
+The debug release currently pins agent `0.1.0-dev.5`. Use
 `--agent-version <version>` to select another published immutable release.
 Bootstrap downloads the exact platform archive and `SHA256SUMS` from the
 corresponding `agent-v<version>` GitHub Release, rejects unexpected archive
@@ -214,8 +239,8 @@ Linux host matrix, backward-compatibility gate, and staged release checklist.
 See [`notifications/README.md`](notifications/README.md) for the agent's data
 minimization, local state, commands, and build instructions.
 
-## Roadmap
+## Architecture
 
-APNs-based push notifications are being developed through Codex lifecycle hooks
-and a dedicated outbound-only companion agent. The agent is not a proxy and
-does not enter the authoritative App Server/Tailscale connection path.
+APNs-based push notifications use Codex lifecycle hooks and a dedicated
+outbound-only companion agent. The agent is not a proxy and does not enter the
+authoritative App Server/Tailscale connection path.

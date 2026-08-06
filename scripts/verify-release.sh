@@ -57,6 +57,7 @@ test ! -e "$default_home/.local/state/novascale-agent"
 test ! -e "$default_home/.codex/hooks.json"
 test ! -e "$default_home/Library/LaunchAgents/dev.galaxnet.novascale.agent.plist"
 test ! -e "$default_home/.config/systemd/user/novascale-agent.service"
+grep -q 'Notification setup is enabled by default' "$temporary_root/default-output"
 
 case "$(uname -s)" in
   Darwin) test -s "$default_home/Library/LaunchAgents/dev.galaxnet.novascale.codex.plist" ;;
@@ -117,7 +118,6 @@ if HOME="$gated_home" PATH="$test_path" "$root_dir/setup.sh" \
   --port "$((test_port + 1))" \
   --no-start \
   --no-qr \
-  --enable-notifications \
   --agent-binary "$true_binary" \
   >"$temporary_root/gated-output" \
   2>"$temporary_root/gated-error"
@@ -167,7 +167,7 @@ cat >"$enrollment_agent" <<'EOF'
 set -eu
 case "${1:-}" in
   version)
-    printf '%s\n' '0.1.0-dev.4'
+    printf '%s\n' '0.1.0-dev.5'
     ;;
   init)
     shift
@@ -211,7 +211,7 @@ mkdir -p "$release_fixture_dir" "$release_package_dir/THIRD_PARTY_LICENSES" "$do
 cp "$enrollment_agent" "$release_package_dir/novascale-agent"
 cp "$root_dir/LICENSE" "$release_package_dir/LICENSE"
 cp -R "$root_dir/notifications/third_party_licenses/." "$release_package_dir/THIRD_PARTY_LICENSES/"
-release_archive="novascale-agent_0.1.0-dev.4_linux_amd64.tar.gz"
+release_archive="novascale-agent_0.1.0-dev.5_linux_amd64.tar.gz"
 tar -C "$release_package_dir" -czf "$release_fixture_dir/$release_archive" \
   novascale-agent LICENSE THIRD_PARTY_LICENSES
 if command -v shasum >/dev/null 2>&1; then
@@ -328,7 +328,7 @@ HOME="$enrollment_home" PATH="$download_test_path" NOVASCALE_TEST_AGENT_LOG="$en
   --notification-setup-token-file "$setup_token_file" \
   >"$temporary_root/enrollment-output" \
   2>"$temporary_root/enrollment-error"
-grep -q 'Downloading signed NovaScale notification agent 0.1.0-dev.4 for linux-amd64.' "$temporary_root/enrollment-output"
+grep -q 'Downloading signed NovaScale notification agent 0.1.0-dev.5 for linux-amd64.' "$temporary_root/enrollment-output"
 test "$(grep -c '^SHA256SUMS$' "$release_download_log")" -eq 1
 test "$(grep -c "^${release_archive}$" "$release_download_log")" -eq 1
 cmp -s "$enrollment_agent" "$enrollment_home/.local/bin/novascale-agent"
