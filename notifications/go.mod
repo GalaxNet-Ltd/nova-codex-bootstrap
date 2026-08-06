@@ -1,6 +1,6 @@
 module github.com/GalaxNet-Ltd/nova-codex-bootstrap
 
-go 1.24.0
+go 1.26.5
 
 require (
 	golang.org/x/sys v0.34.0
