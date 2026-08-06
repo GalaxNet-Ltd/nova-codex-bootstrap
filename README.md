@@ -227,9 +227,19 @@ Notification endpoints must use HTTPS. Plain HTTP is accepted only for
 loopback development through `localhost`, `127.0.0.0/8`, or `::1`.
 
 Setup adds only the exact `novascale-agent hook` handlers to the user's
-existing `~/.codex/hooks.json`. Review and trust the resulting hook definition
-with `/hooks` in Codex CLI. The hook reports events only and always returns
-`{}`; Codex and the user retain the approval decision.
+existing `~/.codex/hooks.json`. Notifications remain inactive until those exact
+definitions have been reviewed and trusted, and Codex has loaded them. After
+setup, open Codex CLI on the host, run `/hooks`, and review and trust the
+NovaScale `PermissionRequest` and `Stop` hooks. If the Codex App Server is
+already running, wait for active turns and approvals to finish, then restart it
+after trusting the hooks before testing a new or existing thread:
+
+```sh
+novascale-codex restart
+```
+
+The hook reports events only and always returns `{}`; Codex and the user retain
+the approval decision.
 
 `--dev-agent` and `--agent-binary` remain explicit development overrides and
 cannot be combined with `--agent-version`.

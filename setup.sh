@@ -1552,5 +1552,16 @@ notice "Pairing host: ${host}:${port}"
 notice "Helper: ${HELPER_PATH}"
 if [ "$notification_disabled" -eq 0 ] && { [ "$notification_requested" -eq 1 ] || [ -f "$AGENT_CONFIG_FILE" ]; }; then
   notice "Notification agent: ${AGENT_PATH}"
-  notice "Codex hook trust: review NovaScale handlers with /hooks in Codex CLI."
+  if [ "$no_hook_install" -eq 1 ]; then
+    notice "Codex hooks were not installed because --no-hook-install was provided."
+    notice "Notifications remain inactive until equivalent PermissionRequest and Stop hooks are configured and trusted."
+  else
+    notice ""
+    notice "Finish notification setup:"
+    notice "  1. Open Codex CLI on this host and run /hooks."
+    notice "  2. Review and trust the NovaScale PermissionRequest and Stop hooks."
+    notice "  3. If the hooks were newly installed or trusted, wait for active turns and approvals to finish, then run:"
+    notice "     novascale-codex restart"
+    notice "Notifications remain inactive until Codex has loaded the trusted hooks."
+  fi
 fi

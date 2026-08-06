@@ -182,7 +182,17 @@ Developer ID 簽章、公證票據及預期的 universal 架構。
 存取的 loopback 開發服務可以使用 HTTP。
 
 設定腳本只向現有 `~/.codex/hooks.json` 加入精確的 `novascale-agent hook`
-處理器。請在 Codex CLI 中使用 `/hooks` 檢查並信任產生的 hook 定義。
+處理器。在使用者檢查並信任這些精確定義、且 Codex 載入它們之前，通知不會生效。
+設定完成後，請在主機上開啟 Codex CLI，執行 `/hooks`，檢查並信任 NovaScale 的
+`PermissionRequest` 與 `Stop` hooks。如果 Codex App Server 已在執行，請在
+信任 hooks 後等待正在執行的回合與待處理的核准結束，再重新啟動並測試新建或現有
+thread：
+
+```sh
+novascale-codex restart
+```
+
+hook 只回報事件並始終回傳 `{}`；Codex 與使用者仍保留核准決定權。
 
 詳見 [`docs/release-preparation.md`](docs/release-preparation.md) 和
 [`notifications/README.md`](notifications/README.md)。

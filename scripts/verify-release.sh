@@ -329,6 +329,8 @@ HOME="$enrollment_home" PATH="$download_test_path" NOVASCALE_TEST_AGENT_LOG="$en
   >"$temporary_root/enrollment-output" \
   2>"$temporary_root/enrollment-error"
 grep -q 'Downloading signed NovaScale notification agent 0.1.0-dev.5 for linux-amd64.' "$temporary_root/enrollment-output"
+grep -q '^Finish notification setup:$' "$temporary_root/enrollment-output"
+grep -q '^     novascale-codex restart$' "$temporary_root/enrollment-output"
 test "$(grep -c '^SHA256SUMS$' "$release_download_log")" -eq 1
 test "$(grep -c "^${release_archive}$" "$release_download_log")" -eq 1
 cmp -s "$enrollment_agent" "$enrollment_home/.local/bin/novascale-agent"
