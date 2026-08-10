@@ -105,6 +105,8 @@ Commands:
 
 ```sh
 novascale-codex status
+novascale-codex update-status
+novascale-codex restart-if-updated
 novascale-codex restart
 novascale-codex stop
 novascale-codex notification-status
@@ -177,9 +179,15 @@ notification side channel. `novascale-agent` observes `PermissionRequest` and
 locally, and uploads a signed event to the configured service. The hook always
 returns `{}` and never supplies a Codex verdict.
 
-The agent also provides an explicit `app-server restart` command for the host
-user. It never restarts the wrapper automatically or exposes restart control
-over the notification channel.
+The agent provides explicit `app-server update-status` and
+`app-server restart-if-updated` commands for host-side maintenance, exposed by
+the installed helper as `novascale-codex update-status` and
+`novascale-codex restart-if-updated`. The first
+reports whether the configured Codex executable changed after the running
+wrapper started. The second restarts only when that check reports an update.
+An unknown state never triggers a restart. The agent never restarts the wrapper
+automatically or exposes restart control over the notification channel, so it
+cannot interrupt a long-running turn or goal in the background.
 
 For notification-enabled setup, bootstrap downloads the pinned agent release
 for the host platform. An already-enrolled agent keeps its existing identity:
@@ -205,7 +213,7 @@ not wait on a registration network request:
   --notification-setup-token-file /path/to/protected/setup-token
 ```
 
-The bootstrap currently pins stable agent `0.1.1`. Use
+The bootstrap currently pins stable agent `0.1.2`. Use
 `--agent-version <version>` to select another published immutable release.
 Bootstrap downloads the exact platform archive and `SHA256SUMS` from the
 corresponding `agent-v<version>` GitHub Release, rejects unexpected archive

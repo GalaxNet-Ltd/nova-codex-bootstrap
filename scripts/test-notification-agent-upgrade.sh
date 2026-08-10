@@ -45,7 +45,7 @@ case "\${1:-}" in
   version) printf '%s\n' '$binary_version' ;;
   daemon-version) cat "\$NOVASCALE_TEST_LIVE_VERSION_FILE" ;;
   registration-state) printf '%s\n' 'active' ;;
-  init|serve|status|hooks|app-server) exit 0 ;;
+  init|switch-backend|serve|status|hooks|app-server) exit 0 ;;
   *) exit 1 ;;
 esac
 EOF

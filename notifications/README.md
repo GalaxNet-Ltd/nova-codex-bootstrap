@@ -68,15 +68,30 @@ events are removed. It contains no APNs device token or Codex session content.
 novascale-agent init \
   --endpoint <HTTPS_URL> \
   --setup-token-file /path/to/protected/setup-token
+novascale-agent switch-backend \
+  --endpoint <NEW_HTTPS_URL> \
+  --setup-token-file /path/to/protected/setup-token
 novascale-agent serve
 novascale-agent status
 novascale-agent registration-state
+novascale-agent endpoint
 novascale-agent daemon-version
 novascale-agent hooks install
 novascale-agent hooks status
 novascale-agent hooks uninstall
+novascale-agent app-server update-status
+novascale-agent app-server restart-if-updated
 novascale-agent app-server restart
 ```
+
+`app-server update-status` prints `current` or `restart_required` by comparing
+the configured Codex executable and its resolved symbolic-link chain with the
+running wrapper service's process start time. `restart-if-updated` restarts the
+wrapper only for `restart_required`; an unavailable configuration, stopped
+service, or inconclusive check fails without restarting it. These checks run
+only when explicitly invoked. The agent daemon, notification hooks, and setup
+upgrade check never restart the Codex App Server automatically, so an active
+turn or goal is not interrupted in the background.
 
 Notification endpoints must use HTTPS outside explicit loopback development.
 The setup-token file must be a regular `0400` or `0600` file containing the
@@ -89,6 +104,24 @@ restarts. It removes the agent-owned token after success or permanent
 rejection. A rejected or missing token leaves the state as
 `needs_setup_token`, and rerunning `init` with a new token resumes enrollment.
 Normal redeploys preserve active and pending host identities.
+
+`switch-backend` preserves the existing host ID, Ed25519 private key, queued
+events, Codex App Server capability token, and wrapper configuration. It
+atomically stages a setup token issued by the destination backend, changes only
+the notification endpoint and registration state, and lets the running daemon
+perform signed registration with normal retry behavior. It is a no-op when an
+active agent already uses the requested endpoint. Use `--force` only to
+re-enroll after the same backend has lost or intentionally removed its host
+registration.
+
+When app-assisted bootstrap supplies both an endpoint and a newly issued setup
+token for an already active host, bootstrap first compares that endpoint with
+the agent's current configuration. A match uses the forced form, repairing the
+registration relationship even if an operator previously edited the URL by
+hand. A mismatch is preserved and requires an explicit `switch-backend`
+command, so a Debug or Release app rebootstrap cannot silently move a test host
+between sandbox and production. Both paths preserve the same host identity and
+wrapper pairing.
 
 `daemon-version` queries the live process over the same private, same-user IPC
 socket used by hooks. Bootstrap uses it to restart the notification service

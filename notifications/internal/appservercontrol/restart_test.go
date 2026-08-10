@@ -16,11 +16,24 @@ type recordedCommand struct {
 type recordingRunner struct {
 	commands []recordedCommand
 	err      error
+	outputs  map[string][]byte
 }
 
 func (r *recordingRunner) Run(_ context.Context, name string, arguments ...string) error {
 	r.commands = append(r.commands, recordedCommand{name: name, arguments: append([]string(nil), arguments...)})
 	return r.err
+}
+
+func (r *recordingRunner) Output(_ context.Context, name string, arguments ...string) ([]byte, error) {
+	r.commands = append(r.commands, recordedCommand{name: name, arguments: append([]string(nil), arguments...)})
+	if r.err != nil {
+		return nil, r.err
+	}
+	return append([]byte(nil), r.outputs[commandKey(name, arguments...)]...), nil
+}
+
+func commandKey(name string, arguments ...string) string {
+	return strings.Join(append([]string{name}, arguments...), "\x00")
 }
 
 func TestRestartDarwin(t *testing.T) {

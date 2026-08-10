@@ -35,6 +35,8 @@ func main() {
 	switch os.Args[1] {
 	case "init":
 		err = runInit(os.Args[2:])
+	case "switch-backend":
+		err = runSwitchBackend(os.Args[2:])
 	case "serve":
 		err = runServe(os.Args[2:])
 	case "status":
@@ -43,6 +45,8 @@ func main() {
 		err = runRegistrationState(os.Args[2:])
 	case "host-id":
 		err = runHostID(os.Args[2:])
+	case "endpoint":
+		err = runEndpoint(os.Args[2:])
 	case "daemon-version":
 		err = runDaemonVersion(os.Args[2:])
 	case "app-server":
@@ -145,16 +149,51 @@ func shellCommand(value string) string {
 }
 
 func runAppServer(arguments []string) error {
-	if len(arguments) != 1 || arguments[0] != "restart" {
-		return fmt.Errorf("usage: novascale-agent app-server restart")
+	if len(arguments) != 1 {
+		return fmt.Errorf("usage: novascale-agent app-server <update-status|restart-if-updated|restart>")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	timeout := 15 * time.Second
+	if arguments[0] == "update-status" {
+		timeout = 5 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	if err := appservercontrol.Restart(ctx); err != nil {
-		return err
+	switch arguments[0] {
+	case "update-status":
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+		status, err := appservercontrol.InspectUpdate(ctx, home)
+		if err != nil {
+			return err
+		}
+		fmt.Println(status.State)
+		return nil
+	case "restart-if-updated":
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+		restarted, err := appservercontrol.RestartIfUpdated(ctx, home)
+		if err != nil {
+			return err
+		}
+		if restarted {
+			fmt.Println("NovaScale Codex App Server restart requested for the updated Codex executable.")
+		} else {
+			fmt.Println("NovaScale Codex App Server is already using the configured Codex executable.")
+		}
+		return nil
+	case "restart":
+		if err := appservercontrol.Restart(ctx); err != nil {
+			return err
+		}
+		fmt.Println("NovaScale Codex App Server restart requested.")
+		return nil
+	default:
+		return fmt.Errorf("usage: novascale-agent app-server <update-status|restart-if-updated|restart>")
 	}
-	fmt.Println("NovaScale Codex App Server restart requested.")
-	return nil
 }
 
 func runHook(arguments []string) {
@@ -246,6 +285,69 @@ func runInit(arguments []string) error {
 	fmt.Println("NovaScale notification enrollment staged:", config.HostID)
 	fmt.Println("The agent daemon will enroll this host in the background.")
 	return nil
+}
+
+func runSwitchBackend(arguments []string) error {
+	paths, err := agent.DefaultPaths()
+	if err != nil {
+		return err
+	}
+	flags := flag.NewFlagSet("switch-backend", flag.ContinueOnError)
+	endpoint := flags.String("endpoint", "", "new notification backend endpoint")
+	setupTokenFile := flags.String("setup-token-file", "", "protected file containing a setup token issued by the new backend")
+	force := flags.Bool("force", false, "re-enroll even when the endpoint has not changed")
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("switch-backend takes no positional arguments")
+	}
+	if *endpoint == "" {
+		return fmt.Errorf("--endpoint is required")
+	}
+	if *setupTokenFile == "" {
+		return fmt.Errorf("--setup-token-file is required")
+	}
+
+	unlock, err := agent.LockEnrollment(paths.EnrollmentLock)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	config, err := agent.LoadConfig(paths.ConfigFile)
+	if err != nil {
+		return fmt.Errorf("load existing agent identity: %w", err)
+	}
+	if _, err := agent.LoadPrivateKey(paths.KeyFile); err != nil {
+		return fmt.Errorf("load existing host key: %w", err)
+	}
+	next := config
+	next.Endpoint = *endpoint
+	next.RegistrationState = agent.RegistrationPending
+	if err := agent.ValidateConfig(next); err != nil {
+		return err
+	}
+	if !*force && config.RegistrationState == agent.RegistrationActive && sameNotificationEndpoint(config.Endpoint, next.Endpoint) {
+		fmt.Println("NovaScale notification agent already uses this backend; enrollment was left active.")
+		return nil
+	}
+	if err := agent.StageSetupToken(*setupTokenFile, paths.SetupTokenFile); err != nil {
+		return err
+	}
+	if err := agent.SaveConfig(paths.ConfigFile, next); err != nil {
+		return err
+	}
+	if sameNotificationEndpoint(config.Endpoint, next.Endpoint) {
+		fmt.Println("NovaScale notification re-enrollment staged for existing host:", config.HostID)
+	} else {
+		fmt.Println("NovaScale notification backend switch staged for existing host:", config.HostID)
+	}
+	return nil
+}
+
+func sameNotificationEndpoint(left, right string) bool {
+	return strings.TrimRight(left, "/") == strings.TrimRight(right, "/")
 }
 
 func runServe(arguments []string) error {
@@ -351,6 +453,17 @@ func runStatus(arguments []string) error {
 	} else {
 		fmt.Println("Live version:  unavailable")
 	}
+	updateContext, updateCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer updateCancel()
+	if home, err := os.UserHomeDir(); err == nil {
+		if status, err := appservercontrol.InspectUpdate(updateContext, home); err == nil {
+			fmt.Println("App Server update:", status.State)
+		} else {
+			fmt.Println("App Server update: unavailable")
+		}
+	} else {
+		fmt.Println("App Server update: unavailable")
+	}
 	return nil
 }
 
@@ -386,6 +499,22 @@ func runHostID(arguments []string) error {
 	return nil
 }
 
+func runEndpoint(arguments []string) error {
+	paths, err := agent.DefaultPaths()
+	if err != nil {
+		return err
+	}
+	if len(arguments) != 0 {
+		return fmt.Errorf("endpoint takes no arguments")
+	}
+	config, err := agent.LoadConfig(paths.ConfigFile)
+	if err != nil {
+		return err
+	}
+	fmt.Println(config.Endpoint)
+	return nil
+}
+
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: novascale-agent <init|serve|hook|status|registration-state|host-id|daemon-version|hooks|app-server|version>")
+	fmt.Fprintln(os.Stderr, "usage: novascale-agent <init|switch-backend|serve|hook|status|registration-state|host-id|endpoint|daemon-version|hooks|app-server|version>")
 }

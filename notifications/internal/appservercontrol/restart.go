@@ -16,12 +16,17 @@ const (
 
 type commandRunner interface {
 	Run(context.Context, string, ...string) error
+	Output(context.Context, string, ...string) ([]byte, error)
 }
 
 type execRunner struct{}
 
 func (execRunner) Run(ctx context.Context, name string, arguments ...string) error {
 	return exec.CommandContext(ctx, name, arguments...).Run()
+}
+
+func (execRunner) Output(ctx context.Context, name string, arguments ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, arguments...).Output()
 }
 
 // Restart requests a restart of the user-level Codex App Server service.

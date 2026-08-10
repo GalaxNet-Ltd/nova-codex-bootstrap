@@ -58,6 +58,15 @@ test ! -e "$default_home/.codex/hooks.json"
 test ! -e "$default_home/Library/LaunchAgents/dev.galaxnet.novascale.agent.plist"
 test ! -e "$default_home/.config/systemd/user/novascale-agent.service"
 grep -q 'Notification setup is enabled by default' "$temporary_root/default-output"
+if HOME="$default_home" PATH="$test_path" \
+  "$default_home/.local/bin/novascale-codex" restart-if-updated \
+  >"$temporary_root/default-conditional-restart-output" \
+  2>"$temporary_root/default-conditional-restart-error"
+then
+  printf 'conditional restart unexpectedly succeeded without the agent detector\n' >&2
+  exit 1
+fi
+grep -q 'no service was restarted' "$temporary_root/default-conditional-restart-error"
 
 case "$(uname -s)" in
   Darwin) test -s "$default_home/Library/LaunchAgents/dev.galaxnet.novascale.codex.plist" ;;
@@ -167,7 +176,7 @@ cat >"$enrollment_agent" <<'EOF'
 set -eu
 case "${1:-}" in
   version)
-    printf '%s\n' '0.1.1'
+    printf '%s\n' '0.1.2'
     ;;
   init)
     shift
@@ -192,12 +201,37 @@ case "${1:-}" in
     ;;
   registration-state)
     printf 'registration-state\n' >>"$NOVASCALE_TEST_AGENT_LOG"
-    printf '%s\n' 'pending'
+    sed -n 's/.*"registrationState":"\([^"]*\)".*/\1/p' "$HOME/.config/novascale-agent/config.json"
+    ;;
+  endpoint)
+    printf 'endpoint\n' >>"$NOVASCALE_TEST_AGENT_LOG"
+    sed -n 's/.*"endpoint":"\([^"]*\)".*/\1/p' "$HOME/.config/novascale-agent/config.json"
+    ;;
+  switch-backend)
+    shift
+    [ "$#" -eq 5 ]
+    [ "${1:-}" = "--endpoint" ]
+    [ "${2:-}" = "https://notify.production.invalid" ]
+    [ "${3:-}" = "--setup-token-file" ]
+    [ -f "${4:-}" ]
+    [ "${5:-}" = "--force" ]
+    printf 'switch-backend endpoint and setup-token path received\n' >>"$NOVASCALE_TEST_AGENT_LOG"
+    cp "${4:-}" "$HOME/.config/novascale-agent/pending-setup-token"
+    chmod 600 "$HOME/.config/novascale-agent/pending-setup-token"
+    printf '%s\n' '{"version":1,"hostId":"host-test","endpoint":"https://notify.production.invalid","registrationState":"pending"}' \
+      >"$HOME/.config/novascale-agent/config.json"
     ;;
   status)
     printf 'status\n' >>"$NOVASCALE_TEST_AGENT_LOG"
     ;;
-  hooks|serve|daemon-version|app-server)
+  app-server)
+    shift
+    printf 'app-server %s\n' "$*" >>"$NOVASCALE_TEST_AGENT_LOG"
+    if [ "${1:-}" = "update-status" ]; then
+      printf 'current\n'
+    fi
+    ;;
+  hooks|serve|daemon-version)
     exit 0
     ;;
   *)
@@ -211,7 +245,7 @@ mkdir -p "$release_fixture_dir" "$release_package_dir/THIRD_PARTY_LICENSES" "$do
 cp "$enrollment_agent" "$release_package_dir/novascale-agent"
 cp "$root_dir/LICENSE" "$release_package_dir/LICENSE"
 cp -R "$root_dir/notifications/third_party_licenses/." "$release_package_dir/THIRD_PARTY_LICENSES/"
-release_archive="novascale-agent_0.1.1_linux_amd64.tar.gz"
+release_archive="novascale-agent_0.1.2_linux_amd64.tar.gz"
 tar -C "$release_package_dir" -czf "$release_fixture_dir/$release_archive" \
   novascale-agent LICENSE THIRD_PARTY_LICENSES
 if command -v shasum >/dev/null 2>&1; then
@@ -328,13 +362,22 @@ HOME="$enrollment_home" PATH="$download_test_path" NOVASCALE_TEST_AGENT_LOG="$en
   --notification-setup-token-file "$setup_token_file" \
   >"$temporary_root/enrollment-output" \
   2>"$temporary_root/enrollment-error"
-grep -q 'Downloading signed NovaScale notification agent 0.1.1 for linux-amd64.' "$temporary_root/enrollment-output"
+grep -q 'Downloading signed NovaScale notification agent 0.1.2 for linux-amd64.' "$temporary_root/enrollment-output"
 grep -q '^Finish notification setup:$' "$temporary_root/enrollment-output"
 grep -q '^     novascale-codex restart$' "$temporary_root/enrollment-output"
 test "$(grep -c '^SHA256SUMS$' "$release_download_log")" -eq 1
 test "$(grep -c "^${release_archive}$" "$release_download_log")" -eq 1
 cmp -s "$enrollment_agent" "$enrollment_home/.local/bin/novascale-agent"
 grep -q '^init endpoint and setup-token path received$' "$enrollment_log"
+HOME="$enrollment_home" PATH="$download_test_path" NOVASCALE_TEST_AGENT_LOG="$enrollment_log" \
+  "$enrollment_home/.local/bin/novascale-codex" update-status \
+  >"$temporary_root/conditional-update-status"
+grep -q '^current$' "$temporary_root/conditional-update-status"
+HOME="$enrollment_home" PATH="$download_test_path" NOVASCALE_TEST_AGENT_LOG="$enrollment_log" \
+  "$enrollment_home/.local/bin/novascale-codex" restart-if-updated \
+  >"$temporary_root/conditional-restart-output"
+grep -q '^app-server update-status$' "$enrollment_log"
+grep -q '^app-server restart-if-updated$' "$enrollment_log"
 staged_setup_token="$enrollment_home/.config/novascale-agent/pending-setup-token"
 cmp -s "$setup_token_file" "$staged_setup_token"
 if staged_mode="$(stat -c '%a' "$staged_setup_token" 2>/dev/null)"; then
@@ -377,6 +420,54 @@ if grep -q '^init endpoint' "$enrollment_log"; then
   printf 'existing notification enrollment unexpectedly requested another caller setup token\n' >&2
   exit 1
 fi
+
+printf '%s\n' '{"version":1,"hostId":"host-test","endpoint":"http://127.0.0.1:8080","registrationState":"active"}' \
+  >"$enrollment_home/.config/novascale-agent/config.json"
+: >"$enrollment_log"
+HOME="$enrollment_home" PATH="$download_test_path" NOVASCALE_TEST_AGENT_LOG="$enrollment_log" \
+  NOVASCALE_TEST_RELEASE_DIR="$release_fixture_dir" NOVASCALE_TEST_RELEASE_LOG="$release_download_log" \
+  "$root_dir/setup.sh" \
+  --listen 127.0.0.1 \
+  --host 127.0.0.1 \
+  --port "$((test_port + 3))" \
+  --yes \
+  --no-start \
+  --no-qr \
+  --enable-notifications \
+  --notification-endpoint https://notify.production.invalid \
+  --notification-setup-token-file "$setup_token_file" \
+  >"$temporary_root/enrollment-mismatch-output" \
+  2>"$temporary_root/enrollment-mismatch-error"
+grep -q '^endpoint$' "$enrollment_log"
+if grep -q '^switch-backend ' "$enrollment_log"; then
+  printf 'bootstrap implicitly switched an active notification backend\n' >&2
+  exit 1
+fi
+grep -q '"endpoint":"http://127.0.0.1:8080"' "$enrollment_home/.config/novascale-agent/config.json"
+grep -q '"registrationState":"active"' "$enrollment_home/.config/novascale-agent/config.json"
+
+printf '%s\n' '{"version":1,"hostId":"host-test","endpoint":"https://notify.production.invalid","registrationState":"active"}' \
+  >"$enrollment_home/.config/novascale-agent/config.json"
+: >"$enrollment_log"
+HOME="$enrollment_home" PATH="$download_test_path" NOVASCALE_TEST_AGENT_LOG="$enrollment_log" \
+  NOVASCALE_TEST_RELEASE_DIR="$release_fixture_dir" NOVASCALE_TEST_RELEASE_LOG="$release_download_log" \
+  "$root_dir/setup.sh" \
+  --listen 127.0.0.1 \
+  --host 127.0.0.1 \
+  --port "$((test_port + 3))" \
+  --yes \
+  --no-start \
+  --no-qr \
+  --enable-notifications \
+  --notification-endpoint https://notify.production.invalid \
+  --notification-setup-token-file "$setup_token_file" \
+  >"$temporary_root/enrollment-switch-output" \
+  2>"$temporary_root/enrollment-switch-error"
+grep -q '^switch-backend endpoint and setup-token path received$' "$enrollment_log"
+grep -q '"hostId":"host-test"' "$enrollment_home/.config/novascale-agent/config.json"
+grep -q '"endpoint":"https://notify.production.invalid"' "$enrollment_home/.config/novascale-agent/config.json"
+grep -q '"registrationState":"pending"' "$enrollment_home/.config/novascale-agent/config.json"
+cmp -s "$setup_token_file" "$enrollment_home/.config/novascale-agent/pending-setup-token"
 
 if command -v go >/dev/null 2>&1; then
   (

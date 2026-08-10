@@ -8,7 +8,7 @@ AGENT_SERVICE_LABEL="dev.galaxnet.novascale.agent"
 AGENT_SERVICE_FILE="novascale-agent.service"
 DEFAULT_PORT="14500"
 DEFAULT_SCHEME="ws"
-DEFAULT_AGENT_VERSION="0.1.1"
+DEFAULT_AGENT_VERSION="0.1.2"
 AGENT_RELEASE_BASE_URL="https://github.com/GalaxNet-Ltd/nova-codex-bootstrap/releases/download"
 CONFIG_DIR="${HOME}/.codex"
 CONFIG_FILE="${CONFIG_DIR}/novascale-codex-host.env"
@@ -94,7 +94,7 @@ Options:
                         token staged for daemon-owned enrollment.
   --dev-agent           Install an unsigned local agent build from notifications/dist.
   --agent-binary <path> Install this prebuilt novascale-agent binary.
-  --agent-version <ver> Download this pinned agent release. Default: 0.1.1.
+  --agent-version <ver> Download this pinned agent release. Default: 0.1.2.
   --no-hook-install     Install the agent without modifying Codex hooks.json.
   --no-notifications    Skip notification-agent setup and leave any existing
                         notification-agent installation unchanged.
@@ -767,7 +767,21 @@ stage_notification_agent_enrollment() {
   if [ -f "$AGENT_CONFIG_FILE" ]; then
     registration_state="$("$AGENT_PATH" registration-state)"
     if [ "$registration_state" = "active" ]; then
-      notice "Existing active notification-agent identity detected; preserving its host ID and private key."
+      if [ -n "$notification_endpoint" ] && [ -n "$notification_setup_token_file" ]; then
+        current_notification_endpoint="$("$AGENT_PATH" endpoint)"
+        if [ "${current_notification_endpoint%/}" = "${notification_endpoint%/}" ]; then
+          "$AGENT_PATH" switch-backend \
+            --endpoint "$notification_endpoint" \
+            --setup-token-file "$notification_setup_token_file" \
+            --force
+          notice "Existing notification host ID and private key were preserved while refreshing the current backend registration."
+        else
+          notice "Existing active notification backend differs from the requested backend; preserving it."
+          notice "Run novascale-agent switch-backend explicitly before using a different notification backend."
+        fi
+      else
+        notice "Existing active notification-agent identity detected; preserving its host ID and private key."
+      fi
       return 0
     fi
     if [ -z "$notification_setup_token_file" ]; then
@@ -1119,6 +1133,16 @@ status_service() {
   esac
 }
 
+app_server_update_status() {
+  [ -x "$AGENT_PATH" ] || die "Conditional Codex update checks require novascale-agent; no service was restarted."
+  "$AGENT_PATH" app-server update-status
+}
+
+restart_service_if_updated() {
+  [ -x "$AGENT_PATH" ] || die "Conditional Codex update checks require novascale-agent; no service was restarted."
+  "$AGENT_PATH" app-server restart-if-updated
+}
+
 restart_notification_service() {
   [ -x "$AGENT_PATH" ] || die "Notification agent is not installed: $AGENT_PATH"
   case "$(os_name)" in
@@ -1240,6 +1264,8 @@ usage() {
   cat <<'EOF'
 Usage:
   novascale-codex status
+  novascale-codex update-status
+  novascale-codex restart-if-updated
   novascale-codex restart
   novascale-codex stop
   novascale-codex notification-status
@@ -1260,6 +1286,8 @@ shift || true
 
 case "$cmd" in
   status) status_service ;;
+  update-status) app_server_update_status ;;
+  restart-if-updated) restart_service_if_updated ;;
   restart) restart_service ;;
   stop) stop_service ;;
   notification-status) status_notification_service ;;

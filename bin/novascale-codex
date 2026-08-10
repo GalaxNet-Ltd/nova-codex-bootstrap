@@ -158,6 +158,16 @@ status_service() {
   esac
 }
 
+app_server_update_status() {
+  [ -x "$AGENT_PATH" ] || die "Conditional Codex update checks require novascale-agent; no service was restarted."
+  "$AGENT_PATH" app-server update-status
+}
+
+restart_service_if_updated() {
+  [ -x "$AGENT_PATH" ] || die "Conditional Codex update checks require novascale-agent; no service was restarted."
+  "$AGENT_PATH" app-server restart-if-updated
+}
+
 restart_notification_service() {
   [ -x "$AGENT_PATH" ] || die "Notification agent is not installed: $AGENT_PATH"
   case "$(os_name)" in
@@ -279,6 +289,8 @@ usage() {
   cat <<'EOF'
 Usage:
   novascale-codex status
+  novascale-codex update-status
+  novascale-codex restart-if-updated
   novascale-codex restart
   novascale-codex stop
   novascale-codex notification-status
@@ -299,6 +311,8 @@ shift || true
 
 case "$cmd" in
   status) status_service ;;
+  update-status) app_server_update_status ;;
+  restart-if-updated) restart_service_if_updated ;;
   restart) restart_service ;;
   stop) stop_service ;;
   notification-status) status_notification_service ;;
