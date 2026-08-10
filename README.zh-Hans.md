@@ -44,6 +44,9 @@ setup-token 文件，bootstrap 随后会自动下载并注册固定版本的已�
 Codex 设置中单独启用，并且需要 Pro 订阅。关闭主机通知支持会传入
 `--no-notifications`，让主机保持精简的 wrapper-only 安装。
 
+**可用性：** 远程推送需要 NovaScale Pro 订阅以及 NovaScale 1.6.0 或更高
+版本。1.6.0 即将发布。
+
 旧版 App 和手动调用不会提供注册凭据。此时设置脚本会提示通知注册不可用，
 并继续完成 wrapper-only 安装，而不会失败。也可以显式选择该路径：
 

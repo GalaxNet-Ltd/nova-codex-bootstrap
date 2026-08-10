@@ -46,6 +46,9 @@ is enabled separately in Codex Settings and requires a Pro subscription.
 Turning host notification support off passes `--no-notifications` and keeps the
 host on the lean wrapper-only path.
 
+**Availability:** Remote Push requires a NovaScale Pro subscription and
+NovaScale 1.6.0 or later. Version 1.6.0 will be released soon.
+
 Older apps and manual invocations do not have enrollment credentials. In that
 case setup reports that notification enrollment is unavailable and continues
 with the wrapper-only installation instead of failing. To choose that path
