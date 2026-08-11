@@ -3,29 +3,36 @@
 This repository has two independently enabled host components:
 
 1. the established Codex App Server wrapper; and
-2. the notification agent, enabled by default when the app supplies enrollment
-   credentials.
+2. the notification agent, installed and autonomously enrolled by default.
 
 Publishing the agent source must not break existing users. Wrapper-only setup
-remains the compatibility fallback when an older app or manual invocation does
-not supply enrollment credentials.
+remains available through the explicit `--no-notifications` option. Installing
+the host agent does not activate remote APNs delivery; app installation
+registration, entitlement, host association, and the remote-push toggle remain
+separate requirements.
 
 ## Compatibility contract
 
 | App and host combination | Required behavior |
 | --- | --- |
-| Existing app + default bootstrap | Pairing and Codex access continue unchanged; missing enrollment credentials fall back to wrapper-only setup. |
-| Existing app + notification-capable source | Existing host operations continue; notifications remain disabled unless the host user opts in. |
+| Existing app + default bootstrap | Pairing and Codex access continue unchanged; the host agent enrolls autonomously, but an existing app does not activate remote APNs delivery. |
+| Existing app + notification-capable source | Existing host operations and local notification behavior continue; remote delivery remains inactive without app installation registration and an explicit app toggle. |
 | Updated app + wrapper-only host | Codex access works; the app reports remote notifications as unavailable for that host. |
 | Updated app + opted-in host | The agent observes trusted hooks and uploads minimized, signed lifecycle events. |
 | Updated app + new host | Host notification support defaults on for every user; the user can choose the lean `--no-notifications` path. Remote delivery remains a separate Pro subscription setting. |
 
-The default invocation must continue to pass `scripts/verify-release.sh`. When
-no enrollment inputs are available, it must fall back safely without requiring
-an endpoint, hooks, or an agent binary:
+The default invocation must continue to pass `scripts/verify-release.sh`. It
+installs the pinned agent and stages autonomous enrollment without requiring an
+app-provided token or other enrollment input:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/GalaxNet-Ltd/nova-codex-bootstrap/refs/heads/main/setup.sh | sh
+```
+
+The explicit wrapper-only invocation must remain available:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/GalaxNet-Ltd/nova-codex-bootstrap/refs/heads/main/setup.sh | sh -s -- --no-notifications
 ```
 
 ## Clean Linux VM validation
@@ -37,23 +44,23 @@ On a disposable Linux VM with no NovaScale files in the test user's home:
 ./setup.sh
 ```
 
-Verify that setup reports the missing app-provided enrollment credentials, only
-the wrapper service is installed, no notification agent state or hooks exist,
-existing app pairing still works, prompting and approvals are unchanged, and
-uninstall removes the wrapper service.
+Verify the explicit `--no-notifications` path installs only the wrapper, while
+default setup installs the agent and stages autonomous enrollment. Existing app
+pairing must still work, prompting and approvals must remain unchanged, and
+uninstall must remove the selected services.
 
-After publishing the pinned prerelease, run notification validation separately:
+After publishing the pinned agent release, run notification validation
+separately:
 
 ```sh
 notifications/scripts/build-agent-release.sh
 ./setup.sh --enable-notifications \
-  --notification-endpoint https://<NOTIFICATION_ENDPOINT> \
-  --notification-setup-token-file /path/to/protected/setup-token
+  --notification-endpoint https://<NOTIFICATION_ENDPOINT>
 ```
 
 Verify both hook events, neutral `{}` output, queue retry across a temporary
-endpoint outage, enrollment retry across a daemon restart, removal of the
-agent-owned pending token after enrollment, reboot persistence, and
+endpoint outage, autonomous enrollment retry across a daemon restart, absence
+of a persistent enrollment token, reboot persistence, and
 preservation of unrelated hooks. Bootstrap must only stage enrollment; the
 daemon performs the signed registration and proves possession of the locally
 generated signing key.
@@ -69,7 +76,7 @@ git status --short
 ```
 
 Review every tracked candidate for populated environment files, APNs keys,
-device tokens, bearer or setup tokens, host private keys, databases, runtime
+device tokens, bearer or enrollment tokens, host private keys, databases, runtime
 logs, local credential paths, and generated binaries.
 
 ## Agent binary gate
@@ -122,7 +129,7 @@ the inner executable's Developer ID signature before upload. Because the agent
 is a standalone executable rather than an app bundle, both release and
 bootstrap use `codesign --check-notarization` to verify that ticket.
 
-Automatic bootstrap installation pins the stable `0.1.1` release. It
+Automatic bootstrap installation pins the stable `0.1.3` release. It
 downloads only from this repository's HTTPS GitHub Release URL, verifies the
 matching `SHA256SUMS` entry, rejects unexpected archive paths and links,
 requires the embedded version to match, and fails closed instead of falling
@@ -136,15 +143,18 @@ Keep `--dev-agent` available only as an explicit developer path.
 
 ## Rollout order
 
-Deploy backend setup-token support before enabling fresh notification
-enrollment in the app. That backend change does not alter authentication for
+Deploy backend autonomous-enrollment support before enabling fresh notification
+enrollment in bootstrap. That backend change does not alter authentication for
 already-enrolled hosts sending signed events.
 
-1. Publish the backward-compatible wrapper and agent source.
-2. Validate default bootstrap with an existing app release.
-3. Tag the agent commit as `agent-v0.1.1` and publish the signed host-agent release.
+1. Tag the reviewed commit as `agent-v0.1.3` and publish the signed host-agent
+   release without first moving the public bootstrap branch.
+2. Verify the release archives, `SHA256SUMS`, macOS signature, and accepted
+   notarization ticket.
+3. Push the bootstrap branch only after the pinned `0.1.3` artifacts are
+   available, then validate default bootstrap with an existing app release.
 4. Point the debug app bootstrap sheet at this branch, leave notifications on
-   by default, and validate app-issued setup-token enrollment and lifecycle
+   by default, and validate autonomous host enrollment and lifecycle
    notifications with a test app.
 5. Release updated app support while keeping notifications opt-in per host.
 

@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/base64"
 	"io"
 	"os"
 	"path/filepath"
@@ -92,25 +91,16 @@ func TestEndpointPrintsOnlyConfiguredPublicEndpoint(t *testing.T) {
 	}
 }
 
-func TestInitOnlyStagesEnrollmentWithoutNetwork(t *testing.T) {
+func TestInitCreatesPendingIdentityWithoutNetworkOrCallerToken(t *testing.T) {
 	home := t.TempDir()
 	configHome := filepath.Join(home, "config")
 	stateHome := filepath.Join(home, "state")
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", configHome)
 	t.Setenv("XDG_STATE_HOME", stateHome)
-	token := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{6}, 32))
-	source := filepath.Join(home, "setup-token")
-	if err := os.WriteFile(source, []byte(token+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
 	// No server exists at this endpoint. Success proves init did not make the
 	// enrollment request itself.
-	if err := runInit([]string{
-		"--endpoint", "https://127.0.0.1:1",
-		"--setup-token-file", source,
-	}); err != nil {
+	if err := runInit([]string{"--endpoint", "https://127.0.0.1:1"}); err != nil {
 		t.Fatal(err)
 	}
 	paths, err := agent.DefaultPaths()
@@ -124,22 +114,8 @@ func TestInitOnlyStagesEnrollmentWithoutNetwork(t *testing.T) {
 	if config.RegistrationState != agent.RegistrationPending {
 		t.Fatalf("registration state = %q, want pending", config.RegistrationState)
 	}
-	staged, err := agent.ReadSetupTokenFile(paths.SetupTokenFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if staged != token {
-		t.Fatal("agent-owned setup token changed")
-	}
-	configBytes, err := os.ReadFile(paths.ConfigFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bytes.Contains(configBytes, []byte(token)) {
-		t.Fatal("setup token leaked into agent configuration")
-	}
-	if _, err := os.Stat(source); err != nil {
-		t.Fatalf("caller-owned setup-token file was removed: %v", err)
+	if _, err := os.Stat(paths.LegacySetupTokenFile); !os.IsNotExist(err) {
+		t.Fatalf("init created a persistent enrollment token: %v", err)
 	}
 	lockInfo, err := os.Stat(paths.EnrollmentLock)
 	if err != nil {
@@ -147,6 +123,24 @@ func TestInitOnlyStagesEnrollmentWithoutNetwork(t *testing.T) {
 	}
 	if lockInfo.Mode().Perm() != 0o600 {
 		t.Fatalf("enrollment lock permissions = %o, want 600", lockInfo.Mode().Perm())
+	}
+	keyBefore, err := os.ReadFile(paths.KeyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runInit([]string{"--endpoint", "https://127.0.0.1:1/"}); err != nil {
+		t.Fatalf("rerun init: %v", err)
+	}
+	reloaded, err := agent.LoadConfig(paths.ConfigFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyAfter, err := os.ReadFile(paths.KeyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.HostID != config.HostID || !bytes.Equal(keyBefore, keyAfter) {
+		t.Fatal("rerun init replaced the existing host identity")
 	}
 }
 
@@ -188,16 +182,12 @@ func TestSwitchBackendPreservesIdentityQueueAndWrapperState(t *testing.T) {
 	if err := os.WriteFile(wrapperToken, []byte("preserved-wrapper-token"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	token := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{8}, 32))
-	tokenSource := filepath.Join(home, "production-setup-token")
-	if err := os.WriteFile(tokenSource, []byte(token+"\n"), 0o600); err != nil {
+	legacyToken := paths.LegacySetupTokenFile
+	if err := os.WriteFile(legacyToken, []byte("obsolete-token\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := runSwitchBackend([]string{
-		"--endpoint", "https://notify.example.test",
-		"--setup-token-file", tokenSource,
-	}); err != nil {
+	if err := runSwitchBackend([]string{"--endpoint", "https://notify.example.test"}); err != nil {
 		t.Fatal(err)
 	}
 	config, err := agent.LoadConfig(paths.ConfigFile)
@@ -222,9 +212,8 @@ func TestSwitchBackendPreservesIdentityQueueAndWrapperState(t *testing.T) {
 	if err != nil || string(wrapperAfter) != "preserved-wrapper-token" {
 		t.Fatalf("wrapper state changed: %q, error = %v", string(wrapperAfter), err)
 	}
-	staged, err := agent.ReadSetupTokenFile(paths.SetupTokenFile)
-	if err != nil || staged != token {
-		t.Fatal("destination backend setup token was not staged")
+	if _, err := os.Stat(legacyToken); !os.IsNotExist(err) {
+		t.Fatalf("legacy setup token was not removed: %v", err)
 	}
 }
 
@@ -247,12 +236,7 @@ func TestSwitchBackendLeavesMatchingActiveEnrollmentUnchangedUnlessForced(t *tes
 	if err := agent.SaveConfig(paths.ConfigFile, config); err != nil {
 		t.Fatal(err)
 	}
-	token := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32))
-	tokenSource := filepath.Join(home, "setup-token")
-	if err := os.WriteFile(tokenSource, []byte(token+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	arguments := []string{"--endpoint", "https://notify.example.test", "--setup-token-file", tokenSource}
+	arguments := []string{"--endpoint", "https://notify.example.test"}
 	if err := runSwitchBackend(arguments); err != nil {
 		t.Fatal(err)
 	}
@@ -263,8 +247,8 @@ func TestSwitchBackendLeavesMatchingActiveEnrollmentUnchangedUnlessForced(t *tes
 	if unchanged != config {
 		t.Fatalf("matching active enrollment changed: %+v", unchanged)
 	}
-	if _, err := os.Stat(paths.SetupTokenFile); !os.IsNotExist(err) {
-		t.Fatalf("no-op switch staged a setup token: %v", err)
+	if _, err := os.Stat(paths.LegacySetupTokenFile); !os.IsNotExist(err) {
+		t.Fatalf("no-op switch created a persistent enrollment token: %v", err)
 	}
 	if err := runSwitchBackend(append(arguments, "--force")); err != nil {
 		t.Fatal(err)
@@ -275,5 +259,47 @@ func TestSwitchBackendLeavesMatchingActiveEnrollmentUnchangedUnlessForced(t *tes
 	}
 	if forced.RegistrationState != agent.RegistrationPending || forced.HostID != config.HostID {
 		t.Fatalf("forced re-enrollment config = %+v", forced)
+	}
+}
+
+func TestInitPreservesActiveIdentityAndRequiresExplicitBackendSwitch(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	paths, err := agent.DefaultPaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := agent.GenerateIdentity(paths.KeyFile); err != nil {
+		t.Fatal(err)
+	}
+	keyBefore, err := os.ReadFile(paths.KeyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := agent.Config{
+		Version: 1, HostID: "11111111-2222-4333-8444-555555555555",
+		Endpoint: "https://notify.example.test", RegistrationState: agent.RegistrationActive,
+	}
+	if err := agent.SaveConfig(paths.ConfigFile, config); err != nil {
+		t.Fatal(err)
+	}
+	if err := runInit([]string{"--endpoint", "https://notify.example.test/"}); err != nil {
+		t.Fatalf("idempotent active init: %v", err)
+	}
+	if err := runInit([]string{"--endpoint", "https://other.example.test"}); err == nil {
+		t.Fatal("init changed an active backend without switch-backend")
+	}
+	reloaded, err := agent.LoadConfig(paths.ConfigFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyAfter, err := os.ReadFile(paths.KeyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded != config || !bytes.Equal(keyBefore, keyAfter) {
+		t.Fatal("active identity changed during repeated init")
 	}
 }

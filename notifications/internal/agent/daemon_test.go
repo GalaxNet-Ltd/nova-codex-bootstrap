@@ -156,10 +156,10 @@ func TestDaemonEnrollmentRetriesThenReleasesQueuedEvents(t *testing.T) {
 	if err := SaveConfig(configPath, config); err != nil {
 		t.Fatal(err)
 	}
-	token := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{4}, 32))
-	if err := os.WriteFile(tokenPath, []byte(token+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(tokenPath, []byte("obsolete-token\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	enrollmentToken := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{4}, 32))
 	queue, err := OpenQueue(filepath.Join(directory, "agent.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -176,14 +176,28 @@ func TestDaemonEnrollmentRetriesThenReleasesQueuedEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var registrationAttempts int
+	var intentAttempts, registrationAttempts int
 	eventUploaded := make(chan struct{}, 1)
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		switch request.URL.Path {
+		case "/v1/hosts/enrollment-intents":
+			intentAttempts++
+			body, readErr := io.ReadAll(request.Body)
+			if readErr != nil {
+				t.Error(readErr)
+			}
+			timestamp, parseErr := strconv.ParseInt(request.Header.Get("X-NovaScale-Timestamp"), 10, 64)
+			if parseErr != nil || signing.Verify(publicKey, timestamp, hostEnrollmentIntentSignatureID(config.HostID), body, request.Header.Get("X-NovaScale-Signature")) != nil {
+				t.Error("enrollment intent signature was invalid")
+			}
+			return testJSONResponse(http.StatusCreated, map[string]any{
+				"enrollmentToken": enrollmentToken,
+				"expiresAt":       time.Now().Add(time.Hour).UTC(),
+			}), nil
 		case "/v1/hosts/register":
 			registrationAttempts++
-			if request.Header.Get("Authorization") != "Bearer "+token {
-				t.Error("registration did not use the staged setup token")
+			if request.Header.Get("Authorization") != "Bearer "+enrollmentToken {
+				t.Error("registration did not use the autonomous enrollment token")
 			}
 			if registrationAttempts == 1 {
 				return testResponse(http.StatusServiceUnavailable, "503 Service Unavailable"), nil
@@ -205,7 +219,7 @@ func TestDaemonEnrollmentRetriesThenReleasesQueuedEvents(t *testing.T) {
 		}
 	})}
 	daemon := &Daemon{
-		Config: config, ConfigPath: configPath, SetupTokenPath: tokenPath,
+		Config: config, ConfigPath: configPath, LegacySetupTokenPath: tokenPath,
 		PrivateKey: privateKey, Queue: queue, SocketPath: socketPath,
 		Version: "test", Client: client,
 		enrollmentPoll: 5 * time.Millisecond, enrollmentMin: 5 * time.Millisecond,
@@ -227,6 +241,9 @@ func TestDaemonEnrollmentRetriesThenReleasesQueuedEvents(t *testing.T) {
 	if registrationAttempts < 2 {
 		t.Fatalf("registration attempts = %d, want at least 2", registrationAttempts)
 	}
+	if intentAttempts != registrationAttempts {
+		t.Fatalf("intent attempts = %d, registration attempts = %d", intentAttempts, registrationAttempts)
+	}
 	saved, err := LoadConfig(configPath)
 	if err != nil {
 		t.Fatal(err)
@@ -239,7 +256,7 @@ func TestDaemonEnrollmentRetriesThenReleasesQueuedEvents(t *testing.T) {
 	}
 }
 
-func TestDaemonEnrollmentSurvivesRestartAndRejectsPermanentFailure(t *testing.T) {
+func TestDaemonEnrollmentSurvivesRestartAndRecordsIdentityConflict(t *testing.T) {
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -254,12 +271,12 @@ func TestDaemonEnrollmentSurvivesRestartAndRejectsPermanentFailure(t *testing.T)
 	if err := SaveConfig(configPath, config); err != nil {
 		t.Fatal(err)
 	}
-	token := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{5}, 32))
-	if err := os.WriteFile(tokenPath, []byte(token+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(tokenPath, []byte("obsolete-token\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	enrollmentToken := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{5}, 32))
 	transient := &Daemon{
-		Config: config, ConfigPath: configPath, SetupTokenPath: tokenPath,
+		Config: config, ConfigPath: configPath, LegacySetupTokenPath: tokenPath,
 		PrivateKey: privateKey, Version: "test", now: time.Now,
 		Client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 			return testResponse(http.StatusBadGateway, "502 Bad Gateway"), nil
@@ -269,7 +286,7 @@ func TestDaemonEnrollmentSurvivesRestartAndRejectsPermanentFailure(t *testing.T)
 		t.Fatalf("transient enrollment result = %v, want retry", result)
 	}
 	if _, err := os.Stat(tokenPath); err != nil {
-		t.Fatalf("transient failure removed pending token: %v", err)
+		t.Fatalf("transient failure removed legacy token before enrollment resolved: %v", err)
 	}
 
 	saved, err := LoadConfig(configPath)
@@ -277,10 +294,20 @@ func TestDaemonEnrollmentSurvivesRestartAndRejectsPermanentFailure(t *testing.T)
 		t.Fatal(err)
 	}
 	resumed := &Daemon{
-		Config: saved, ConfigPath: configPath, SetupTokenPath: tokenPath,
+		Config: saved, ConfigPath: configPath, LegacySetupTokenPath: tokenPath,
 		PrivateKey: privateKey, Version: "test", now: time.Now,
-		Client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-			return testResponse(http.StatusCreated, "201 Created"), nil
+		Client: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			switch request.URL.Path {
+			case "/v1/hosts/enrollment-intents":
+				return testJSONResponse(http.StatusCreated, map[string]any{
+					"enrollmentToken": enrollmentToken,
+					"expiresAt":       time.Now().Add(time.Hour).UTC(),
+				}), nil
+			case "/v1/hosts/register":
+				return testResponse(http.StatusCreated, "201 Created"), nil
+			default:
+				return testResponse(http.StatusNotFound, "404 Not Found"), nil
+			}
 		})},
 	}
 	if result := resumed.attemptEnrollment(context.Background()); result != enrollmentSucceeded {
@@ -288,7 +315,7 @@ func TestDaemonEnrollmentSurvivesRestartAndRejectsPermanentFailure(t *testing.T)
 	}
 
 	rejectionTokenPath := filepath.Join(directory, "rejected-setup-token")
-	if err := os.WriteFile(rejectionTokenPath, []byte(token+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(rejectionTokenPath, []byte("obsolete-token\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	rejectedConfig := saved
@@ -297,10 +324,20 @@ func TestDaemonEnrollmentSurvivesRestartAndRejectsPermanentFailure(t *testing.T)
 		t.Fatal(err)
 	}
 	rejected := &Daemon{
-		Config: rejectedConfig, ConfigPath: configPath, SetupTokenPath: rejectionTokenPath,
+		Config: rejectedConfig, ConfigPath: configPath, LegacySetupTokenPath: rejectionTokenPath,
 		PrivateKey: privateKey, Version: "test", now: time.Now,
-		Client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-			return testResponse(http.StatusUnauthorized, "401 Unauthorized"), nil
+		Client: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			switch request.URL.Path {
+			case "/v1/hosts/enrollment-intents":
+				return testJSONResponse(http.StatusCreated, map[string]any{
+					"enrollmentToken": enrollmentToken,
+					"expiresAt":       time.Now().Add(time.Hour).UTC(),
+				}), nil
+			case "/v1/hosts/register":
+				return testResponse(http.StatusConflict, "409 Conflict"), nil
+			default:
+				return testResponse(http.StatusNotFound, "404 Not Found"), nil
+			}
 		})},
 	}
 	if result := rejected.attemptEnrollment(context.Background()); result != enrollmentWaiting {
@@ -310,7 +347,7 @@ func TestDaemonEnrollmentSurvivesRestartAndRejectsPermanentFailure(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rejectedSaved.RegistrationState != RegistrationNeedsSetupToken {
+	if rejectedSaved.RegistrationState != RegistrationIdentityConflict {
 		t.Fatalf("rejected registration state = %q", rejectedSaved.RegistrationState)
 	}
 	if _, err := os.Stat(rejectionTokenPath); !os.IsNotExist(err) {
@@ -325,7 +362,20 @@ func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, 
 }
 
 func testResponse(statusCode int, status string) *http.Response {
-	return &http.Response{StatusCode: statusCode, Status: status, Body: io.NopCloser(emptyReader{})}
+	return &http.Response{StatusCode: statusCode, Status: status, Body: io.NopCloser(emptyReader{}), Header: make(http.Header)}
+}
+
+func testJSONResponse(statusCode int, value any) *http.Response {
+	body, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return &http.Response{
+		StatusCode: statusCode,
+		Status:     strconv.Itoa(statusCode),
+		Body:       io.NopCloser(bytes.NewReader(body)),
+		Header:     make(http.Header),
+	}
 }
 
 type emptyReader struct{}

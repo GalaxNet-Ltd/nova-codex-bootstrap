@@ -22,21 +22,21 @@ import (
 )
 
 type Daemon struct {
-	Config         Config
-	ConfigPath     string
-	SetupTokenPath string
-	EnrollmentLock string
-	PrivateKey     ed25519.PrivateKey
-	Queue          *Queue
-	SocketPath     string
-	Version        string
-	Client         *http.Client
-	now            func() time.Time
-	wake           chan struct{}
-	configMu       sync.RWMutex
-	enrollmentPoll time.Duration
-	enrollmentMin  time.Duration
-	enrollmentMax  time.Duration
+	Config               Config
+	ConfigPath           string
+	LegacySetupTokenPath string
+	EnrollmentLock       string
+	PrivateKey           ed25519.PrivateKey
+	Queue                *Queue
+	SocketPath           string
+	Version              string
+	Client               *http.Client
+	now                  func() time.Time
+	wake                 chan struct{}
+	configMu             sync.RWMutex
+	enrollmentPoll       time.Duration
+	enrollmentMin        time.Duration
+	enrollmentMax        time.Duration
 }
 
 func (d *Daemon) Run(ctx context.Context) error {

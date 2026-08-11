@@ -38,17 +38,17 @@ token。
 
 ### 向後相容性
 
-所有使用者的主機通知支援都預設開啟。新版 App 會提供通知後端位址和短效
-setup-token 檔案，bootstrap 隨後會自動下載並註冊固定版本的已簽署 agent。
-這只會讓主機具備通知能力，不會啟用付費的遠端通知傳遞。遠端推播需要在
+所有使用者的主機通知支援都預設開啟。bootstrap 會自動下載固定版本的已簽署
+agent、建立主機身分，並讓 agent 透過預設正式端點自主註冊；不需要 App、APNs
+token 或傳遞註冊憑據。這只會讓主機具備通知能力，不會啟用付費的遠端通知傳遞。遠端推播需要在
 Codex 設定中另外啟用，並且需要 Pro 訂閱。關閉主機通知支援會傳入
 `--no-notifications`，讓主機保持精簡的 wrapper-only 安裝。
 
 **可用性：** 遠端推播需要 NovaScale Pro 訂閱以及 NovaScale 1.6.0 或更新
 版本。1.6.0 即將推出。
 
-舊版 App 和手動呼叫不會提供註冊憑據。此時設定腳本會提示通知註冊不可用，
-並繼續完成 wrapper-only 安裝，而不會失敗。也可以明確選擇該路徑：
+舊版 App 仍然相容，因為通知只是觀察旁路，不會改變 wrapper 配對或 Codex App
+Server 協議。也可以明確選擇 wrapper-only 路徑：
 
 ```sh
 ./setup.sh --no-notifications
@@ -172,12 +172,11 @@ APNs payload 只包含通用通知文案，以及不透明的 event、host、thr
 決定。
 
 啟用通知的 bootstrap 會下載適合主機平台的固定 agent Release。已註冊的
-agent 會保留現有身分。首次註冊使用由 App 取得的短效、一次性 setup token；
-App 將 token 寫入受保護的 `0600` 暫存檔，bootstrap 只在本機暫存註冊，
-agent daemon 隨後在背景註冊並自動重試。註冊完成或遭永久拒絕後，agent 會
-刪除自己的 token 副本。
+agent 會保留現有身分。首次註冊時，agent 使用本機主機私鑰證明身分，取得與
+host ID 和公鑰綁定的短效、一次性 token，只保留於記憶體，並用於另一個已簽署
+的註冊請求。agent daemon 會在背景自動重試。
 
-目前 bootstrap 固定使用穩定版 agent `0.1.1`。bootstrap 會驗證平台封裝、
+目前 bootstrap 固定使用穩定版 agent `0.1.3`。bootstrap 會驗證平台封裝、
 `SHA256SUMS`、封裝路徑和內嵌版本，且不會回退到未簽署建置。macOS 還會驗證
 Developer ID 簽章、公證票據及預期的 universal 架構。
 

@@ -38,17 +38,17 @@ token。
 
 ### 向后兼容性
 
-所有用户的主机通知支持都默认开启。新版 App 会提供通知后端地址和短时
-setup-token 文件，bootstrap 随后会自动下载并注册固定版本的已签名 agent。
-这只会让主机具备通知能力，不会启用付费的远程通知投递。远程推送需要在
+所有用户的主机通知支持都默认开启。bootstrap 会自动下载固定版本的已签名
+agent、创建主机身份，并让 agent 通过默认生产端点自主注册；无需 App、APNs
+token 或传递注册凭据。这只会让主机具备通知能力，不会启用付费的远程通知投递。远程推送需要在
 Codex 设置中单独启用，并且需要 Pro 订阅。关闭主机通知支持会传入
 `--no-notifications`，让主机保持精简的 wrapper-only 安装。
 
 **可用性：** 远程推送需要 NovaScale Pro 订阅以及 NovaScale 1.6.0 或更高
 版本。1.6.0 即将发布。
 
-旧版 App 和手动调用不会提供注册凭据。此时设置脚本会提示通知注册不可用，
-并继续完成 wrapper-only 安装，而不会失败。也可以显式选择该路径：
+旧版 App 仍然兼容，因为通知只是观察旁路，不会改变 wrapper 配对或 Codex App
+Server 协议。也可以显式选择 wrapper-only 路径：
 
 ```sh
 ./setup.sh --no-notifications
@@ -171,12 +171,11 @@ APNs payload 只包含通用通知文案，以及不透明的 event、host、thr
 事件，并上传签名事件。hook 始终返回 `{}`，不会替 Codex 作出任何决定。
 
 启用通知的 bootstrap 会下载适合主机平台的固定 agent Release。已经注册的
-agent 会保留现有身份。首次注册使用由 App 获取的短时、一次性 setup token；
-App 将 token 写入受保护的 `0600` 临时文件，bootstrap 只在本地暂存注册，
-agent daemon 随后在后台注册并自动重试。注册完成或被永久拒绝后，agent 会
-删除自己的 token 副本。
+agent 会保留现有身份。首次注册时，agent 使用本地主机私钥证明身份，取得与
+host ID 和公钥绑定的短时、一次性 token，只在内存中保留，并在单独签名的注册
+请求中使用。agent daemon 会在后台自动重试。
 
-当前 bootstrap 固定使用稳定版 agent `0.1.1`。bootstrap 会校验平台归档、
+当前 bootstrap 固定使用稳定版 agent `0.1.3`。bootstrap 会校验平台归档、
 `SHA256SUMS`、归档路径和内嵌版本，且不会回退到未签名构建。macOS 还会验证
 Developer ID 签名、公证票据和预期的 universal 架构。
 

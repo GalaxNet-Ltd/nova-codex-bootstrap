@@ -39,20 +39,20 @@ explicitly supplied or no usable token exists.
 ### Backward compatibility
 
 Host notification support is enabled by default for every user. The updated
-app supplies the notification endpoint and a short-lived setup-token file, so
-bootstrap downloads and enrolls the pinned signed agent release automatically.
-This prepares the host but does not activate paid remote delivery. Remote Push
-is enabled separately in Codex Settings and requires a Pro subscription.
+bootstrap downloads the pinned signed agent release, creates the host identity,
+and lets the agent enroll itself through the public production endpoint. This
+requires no app, APNs token, or transferred enrollment credential. It prepares
+the host but does not activate paid remote delivery. Remote Push is enabled
+separately in Codex Settings and requires a Pro subscription.
 Turning host notification support off passes `--no-notifications` and keeps the
 host on the lean wrapper-only path.
 
 **Availability:** Remote Push requires a NovaScale Pro subscription and
 NovaScale 1.6.0 or later. Version 1.6.0 will be released soon.
 
-Older apps and manual invocations do not have enrollment credentials. In that
-case setup reports that notification enrollment is unavailable and continues
-with the wrapper-only installation instead of failing. To choose that path
-explicitly, use:
+Older apps remain compatible because notification enrollment is an
+observational side channel and does not change wrapper pairing or the Codex App
+Server protocol. To choose the wrapper-only path explicitly, use:
 
 ```sh
 ./setup.sh --no-notifications
@@ -205,18 +205,16 @@ daemon when the live version or binary is stale, after the binary, hooks, and
 service definition are ready. The durable queue survives this restart, and the
 Codex App Server wrapper is not restarted by the notification upgrade check.
 
-For first enrollment, the app obtains a short-lived, single-use setup token and
-writes it to a temporary `0600` file. Pass that protected file and the backend
-URL. Bootstrap creates the host identity and stages enrollment locally; it does
-not wait on a registration network request:
+For first enrollment, bootstrap creates the host identity locally and stages
+the daemon for autonomous registration. The production endpoint is the default;
+an explicit endpoint is needed only for local development or another backend:
 
 ```sh
 ./setup.sh --yes --enable-notifications \
-  --notification-endpoint https://<NOTIFICATION_ENDPOINT> \
-  --notification-setup-token-file /path/to/protected/setup-token
+  --notification-endpoint https://<NOTIFICATION_ENDPOINT>
 ```
 
-The bootstrap currently pins stable agent `0.1.2`. Use
+The bootstrap currently pins stable agent `0.1.3`. Use
 `--agent-version <version>` to select another published immutable release.
 Bootstrap downloads the exact platform archive and `SHA256SUMS` from the
 corresponding `agent-v<version>` GitHub Release, rejects unexpected archive
@@ -226,13 +224,12 @@ ID signature, notarization ticket, and the expected universal architectures
 before the binary is executed. A matching installed version is reused without
 a network download.
 
-The daemon keeps a protected `0600` copy outside its config, key file, queue,
-and service definition while registration is pending. It proves possession of
-the host private key, sends the token only as registration authorization,
-retries transient failures across restarts, and removes the copy after success
-or permanent rejection. The caller-owned temporary file can be deleted as
-soon as bootstrap has staged it. Redeploying an active host preserves its
-identity; redeploying a pending host continues the existing attempt.
+The daemon proves possession of the host private key to obtain a short-lived,
+single-use token bound to the same host ID and public key, keeps it only in
+memory, and consumes it in a separately signed registration request. It retries
+transient failures across restarts. Redeploying an active or pending host
+preserves its host ID, private key, queue, and backend. Changing the backend
+requires the explicit `novascale-agent switch-backend --endpoint URL` command.
 
 Notification endpoints must use HTTPS. Plain HTTP is accepted only for
 loopback development through `localhost`, `127.0.0.0/8`, or `::1`.

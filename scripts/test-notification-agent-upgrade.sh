@@ -44,6 +44,7 @@ write_fake_agent() {
 case "\${1:-}" in
   version) printf '%s\n' '$binary_version' ;;
   daemon-version) cat "\$NOVASCALE_TEST_LIVE_VERSION_FILE" ;;
+  endpoint) printf '%s\n' 'https://notify.invalid' ;;
   registration-state) printf '%s\n' 'active' ;;
   init|switch-backend|serve|status|hooks|app-server) exit 0 ;;
   *) exit 1 ;;

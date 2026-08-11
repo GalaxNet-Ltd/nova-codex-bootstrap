@@ -6,8 +6,8 @@ import (
 	"syscall"
 )
 
-// LockEnrollment serializes setup-token replacement with an in-flight daemon
-// registration attempt. The lock contains no enrollment or credential data.
+// LockEnrollment serializes configuration changes with an in-flight daemon
+// enrollment attempt. The lock contains no enrollment or credential data.
 func LockEnrollment(path string) (func(), error) {
 	if path == "" {
 		return func() {}, nil

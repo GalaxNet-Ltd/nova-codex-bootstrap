@@ -229,7 +229,6 @@ func runInit(arguments []string) error {
 	}
 	flags := flag.NewFlagSet("init", flag.ContinueOnError)
 	endpoint := flags.String("endpoint", "", "notification endpoint (required for a new identity)")
-	setupTokenFile := flags.String("setup-token-file", "", "protected file containing a single-use setup token")
 	if err := flags.Parse(arguments); err != nil {
 		return err
 	}
@@ -243,17 +242,23 @@ func runInit(arguments []string) error {
 	defer unlock()
 	var config agent.Config
 	if existing, loadErr := agent.LoadConfig(paths.ConfigFile); loadErr == nil {
-		if existing.RegistrationState == agent.RegistrationActive {
-			return fmt.Errorf("agent is already initialized")
-		}
 		if _, keyErr := agent.LoadPrivateKey(paths.KeyFile); keyErr != nil {
-			return fmt.Errorf("resume pending registration: %w", keyErr)
+			return fmt.Errorf("load existing host identity: %w", keyErr)
 		}
 		config = existing
 		if *endpoint != "" {
-			config.Endpoint = *endpoint
+			if !sameNotificationEndpoint(config.Endpoint, *endpoint) {
+				return fmt.Errorf("agent identity already uses another backend; run switch-backend explicitly")
+			}
 		}
-		config.RegistrationState = agent.RegistrationPending
+		if config.RegistrationState == agent.RegistrationActive {
+			_ = os.Remove(paths.LegacySetupTokenFile)
+			fmt.Println("NovaScale notification agent is already enrolled:", config.HostID)
+			return nil
+		}
+		if config.RegistrationState == agent.RegistrationNeedsSetupToken {
+			config.RegistrationState = agent.RegistrationPending
+		}
 	} else if !os.IsNotExist(loadErr) {
 		return loadErr
 	} else {
@@ -276,12 +281,10 @@ func runInit(arguments []string) error {
 	if err := agent.ValidateConfig(config); err != nil {
 		return err
 	}
-	if err := agent.StageSetupToken(*setupTokenFile, paths.SetupTokenFile); err != nil {
-		return err
-	}
 	if err := agent.SaveConfig(paths.ConfigFile, config); err != nil {
 		return err
 	}
+	_ = os.Remove(paths.LegacySetupTokenFile)
 	fmt.Println("NovaScale notification enrollment staged:", config.HostID)
 	fmt.Println("The agent daemon will enroll this host in the background.")
 	return nil
@@ -294,7 +297,6 @@ func runSwitchBackend(arguments []string) error {
 	}
 	flags := flag.NewFlagSet("switch-backend", flag.ContinueOnError)
 	endpoint := flags.String("endpoint", "", "new notification backend endpoint")
-	setupTokenFile := flags.String("setup-token-file", "", "protected file containing a setup token issued by the new backend")
 	force := flags.Bool("force", false, "re-enroll even when the endpoint has not changed")
 	if err := flags.Parse(arguments); err != nil {
 		return err
@@ -305,10 +307,6 @@ func runSwitchBackend(arguments []string) error {
 	if *endpoint == "" {
 		return fmt.Errorf("--endpoint is required")
 	}
-	if *setupTokenFile == "" {
-		return fmt.Errorf("--setup-token-file is required")
-	}
-
 	unlock, err := agent.LockEnrollment(paths.EnrollmentLock)
 	if err != nil {
 		return err
@@ -332,12 +330,10 @@ func runSwitchBackend(arguments []string) error {
 		fmt.Println("NovaScale notification agent already uses this backend; enrollment was left active.")
 		return nil
 	}
-	if err := agent.StageSetupToken(*setupTokenFile, paths.SetupTokenFile); err != nil {
-		return err
-	}
 	if err := agent.SaveConfig(paths.ConfigFile, next); err != nil {
 		return err
 	}
+	_ = os.Remove(paths.LegacySetupTokenFile)
 	if sameNotificationEndpoint(config.Endpoint, next.Endpoint) {
 		fmt.Println("NovaScale notification re-enrollment staged for existing host:", config.HostID)
 	} else {
@@ -382,7 +378,7 @@ func runServe(arguments []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	daemon := agent.Daemon{
-		Config: config, ConfigPath: paths.ConfigFile, SetupTokenPath: paths.SetupTokenFile,
+		Config: config, ConfigPath: paths.ConfigFile, LegacySetupTokenPath: paths.LegacySetupTokenFile,
 		EnrollmentLock: paths.EnrollmentLock,
 		PrivateKey:     ed25519.PrivateKey(privateKey), Queue: queue,
 		SocketPath: *socket, Version: version,

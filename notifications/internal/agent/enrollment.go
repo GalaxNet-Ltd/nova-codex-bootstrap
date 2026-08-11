@@ -86,13 +86,22 @@ func (d *Daemon) enrollmentLoop(ctx context.Context) {
 		}
 		switch d.configSnapshot().RegistrationState {
 		case RegistrationActive:
-			d.discardSetupTokenForState(RegistrationActive)
+			d.discardLegacySetupTokenForState(RegistrationActive)
+			retryDelay = d.enrollmentMin
+			delay = d.enrollmentPoll
+		case RegistrationIdentityConflict:
+			d.discardLegacySetupTokenForState(RegistrationIdentityConflict)
 			retryDelay = d.enrollmentMin
 			delay = d.enrollmentPoll
 		case RegistrationNeedsSetupToken:
-			d.discardSetupTokenForState(RegistrationNeedsSetupToken)
+			// Agents released before autonomous enrollment stopped here until
+			// an app supplied another token. Preserve the identity and migrate
+			// the state so this daemon can enroll it directly.
+			if d.saveRegistrationState(RegistrationPending) == nil {
+				d.discardLegacySetupToken()
+			}
 			retryDelay = d.enrollmentMin
-			delay = d.enrollmentPoll
+			delay = 0
 		case RegistrationPending:
 			switch d.attemptEnrollment(ctx) {
 			case enrollmentSucceeded:
@@ -137,26 +146,28 @@ func (d *Daemon) attemptEnrollment(ctx context.Context) enrollmentResult {
 	if err := d.refreshConfig(); err != nil {
 		return enrollmentRetry
 	}
-	if d.SetupTokenPath == "" {
-		_ = d.saveRegistrationState(RegistrationNeedsSetupToken)
-		return enrollmentWaiting
-	}
-	token, err := ReadSetupTokenFile(d.SetupTokenPath)
-	if err != nil {
-		if d.saveRegistrationState(RegistrationNeedsSetupToken) == nil {
-			d.discardSetupToken()
-		}
-		return enrollmentWaiting
-	}
 	config := d.configSnapshot()
 	requestContext, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	err = RegisterHost(requestContext, d.Client, config.Endpoint, token, config.HostID, d.PrivateKey, d.Version, d.now())
+	now := d.now()
+	token, err := RequestHostEnrollmentToken(
+		requestContext,
+		d.Client,
+		config.Endpoint,
+		config.HostID,
+		d.PrivateKey,
+		d.Version,
+		now,
+	)
+	if err != nil {
+		return enrollmentRetry
+	}
+	err = RegisterHost(requestContext, d.Client, config.Endpoint, token, config.HostID, d.PrivateKey, d.Version, now)
 	if err == nil {
 		if d.saveRegistrationState(RegistrationActive) != nil {
 			return enrollmentRetry
 		}
-		d.discardSetupToken()
+		d.discardLegacySetupToken()
 		select {
 		case d.wake <- struct{}{}:
 		default:
@@ -164,26 +175,26 @@ func (d *Daemon) attemptEnrollment(ctx context.Context) enrollmentResult {
 		return enrollmentSucceeded
 	}
 	var registrationError *RegistrationError
-	if errors.As(err, &registrationError) && registrationError.Permanent() {
-		if d.saveRegistrationState(RegistrationNeedsSetupToken) != nil {
+	if errors.As(err, &registrationError) && registrationError.StatusCode == 409 {
+		if d.saveRegistrationState(RegistrationIdentityConflict) != nil {
 			return enrollmentRetry
 		}
-		d.discardSetupToken()
+		d.discardLegacySetupToken()
 		return enrollmentWaiting
 	}
 	return enrollmentRetry
 }
 
-func (d *Daemon) discardSetupToken() {
-	if d.SetupTokenPath == "" {
+func (d *Daemon) discardLegacySetupToken() {
+	if d.LegacySetupTokenPath == "" {
 		return
 	}
-	if err := os.Remove(d.SetupTokenPath); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(d.LegacySetupTokenPath); err != nil && !os.IsNotExist(err) {
 		return
 	}
 }
 
-func (d *Daemon) discardSetupTokenForState(expectedState string) {
+func (d *Daemon) discardLegacySetupTokenForState(expectedState string) {
 	unlock, err := LockEnrollment(d.EnrollmentLock)
 	if err != nil {
 		return
@@ -193,6 +204,6 @@ func (d *Daemon) discardSetupTokenForState(expectedState string) {
 		return
 	}
 	if d.configSnapshot().RegistrationState == expectedState {
-		d.discardSetupToken()
+		d.discardLegacySetupToken()
 	}
 }

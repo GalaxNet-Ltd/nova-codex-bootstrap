@@ -8,14 +8,14 @@ import (
 )
 
 type Paths struct {
-	ConfigDir      string
-	StateDir       string
-	ConfigFile     string
-	KeyFile        string
-	SetupTokenFile string
-	EnrollmentLock string
-	Database       string
-	Socket         string
+	ConfigDir            string
+	StateDir             string
+	ConfigFile           string
+	KeyFile              string
+	LegacySetupTokenFile string
+	EnrollmentLock       string
+	Database             string
+	Socket               string
 }
 
 func DefaultPaths() (Paths, error) {
@@ -34,21 +34,22 @@ func DefaultPaths() (Paths, error) {
 	configDir := filepath.Join(configBase, "novascale-agent")
 	stateDir := filepath.Join(stateBase, "novascale-agent")
 	return Paths{
-		ConfigDir:      configDir,
-		StateDir:       stateDir,
-		ConfigFile:     filepath.Join(configDir, "config.json"),
-		KeyFile:        filepath.Join(configDir, "host-key"),
-		SetupTokenFile: filepath.Join(configDir, "pending-setup-token"),
-		EnrollmentLock: filepath.Join(configDir, "enrollment.lock"),
-		Database:       filepath.Join(stateDir, "agent.db"),
-		Socket:         filepath.Join(stateDir, "agent.sock"),
+		ConfigDir:            configDir,
+		StateDir:             stateDir,
+		ConfigFile:           filepath.Join(configDir, "config.json"),
+		KeyFile:              filepath.Join(configDir, "host-key"),
+		LegacySetupTokenFile: filepath.Join(configDir, "pending-setup-token"),
+		EnrollmentLock:       filepath.Join(configDir, "enrollment.lock"),
+		Database:             filepath.Join(stateDir, "agent.db"),
+		Socket:               filepath.Join(stateDir, "agent.sock"),
 	}, nil
 }
 
 const (
-	RegistrationPending         = "pending"
-	RegistrationActive          = "active"
-	RegistrationNeedsSetupToken = "needs_setup_token"
+	RegistrationPending          = "pending"
+	RegistrationActive           = "active"
+	RegistrationNeedsSetupToken  = "needs_setup_token"
+	RegistrationIdentityConflict = "identity_conflict"
 )
 
 type Config struct {
@@ -78,7 +79,7 @@ func ValidateConfig(config Config) error {
 		return errors.New("invalid agent configuration")
 	}
 	switch config.RegistrationState {
-	case RegistrationPending, RegistrationActive, RegistrationNeedsSetupToken:
+	case RegistrationPending, RegistrationActive, RegistrationNeedsSetupToken, RegistrationIdentityConflict:
 	default:
 		return errors.New("invalid agent registration state")
 	}

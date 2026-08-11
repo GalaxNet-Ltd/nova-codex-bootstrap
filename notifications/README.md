@@ -65,12 +65,9 @@ events are removed. It contains no APNs device token or Codex session content.
 ## Commands
 
 ```sh
-novascale-agent init \
-  --endpoint <HTTPS_URL> \
-  --setup-token-file /path/to/protected/setup-token
+novascale-agent init --endpoint <HTTPS_URL>
 novascale-agent switch-backend \
-  --endpoint <NEW_HTTPS_URL> \
-  --setup-token-file /path/to/protected/setup-token
+  --endpoint <NEW_HTTPS_URL>
 novascale-agent serve
 novascale-agent status
 novascale-agent registration-state
@@ -94,34 +91,28 @@ upgrade check never restart the Codex App Server automatically, so an active
 turn or goal is not interrupted in the background.
 
 Notification endpoints must use HTTPS outside explicit loopback development.
-The setup-token file must be a regular `0400` or `0600` file containing the
-short-lived, single-use token issued for this installation. `init` performs no
-network request: it copies the token to
-`~/.config/novascale-agent/pending-setup-token` with mode `0600` and records a
-pending enrollment. The caller may then remove its input file. `serve` owns
-registration and retries transient failures with backoff across daemon
-restarts. It removes the agent-owned token after success or permanent
-rejection. A rejected or missing token leaves the state as
-`needs_setup_token`, and rerunning `init` with a new token resumes enrollment.
-Normal redeploys preserve active and pending host identities.
+`init` performs no network request: it creates the host ID and private key when
+needed and records pending enrollment. `serve` proves possession of that key to
+request a short-lived token bound to the host ID and public key, keeps it only
+in memory, and consumes it in a separately signed registration request. It
+retries transient failures with backoff across daemon restarts. Agents upgrading
+from the prerelease `needs_setup_token` state automatically resume using the
+same identity. Normal redeploys preserve active and pending host identities.
 
 `switch-backend` preserves the existing host ID, Ed25519 private key, queued
 events, Codex App Server capability token, and wrapper configuration. It
-atomically stages a setup token issued by the destination backend, changes only
-the notification endpoint and registration state, and lets the running daemon
-perform signed registration with normal retry behavior. It is a no-op when an
+changes only the notification endpoint and registration state, and lets the
+running daemon perform autonomous signed registration with normal retry
+behavior. It is a no-op when an
 active agent already uses the requested endpoint. Use `--force` only to
 re-enroll after the same backend has lost or intentionally removed its host
 registration.
 
-When app-assisted bootstrap supplies both an endpoint and a newly issued setup
-token for an already active host, bootstrap first compares that endpoint with
-the agent's current configuration. A match uses the forced form, repairing the
-registration relationship even if an operator previously edited the URL by
-hand. A mismatch is preserved and requires an explicit `switch-backend`
-command, so a Debug or Release app rebootstrap cannot silently move a test host
-between sandbox and production. Both paths preserve the same host identity and
-wrapper pairing.
+Bootstrap preserves the configured backend on every ordinary rerun. If an
+explicitly requested endpoint differs, setup leaves the existing identity and
+backend unchanged and directs the operator to `switch-backend`. A Debug or
+Release app rebootstrap therefore cannot silently move a host between sandbox
+and production.
 
 `daemon-version` queries the live process over the same private, same-user IPC
 socket used by hooks. Bootstrap uses it to restart the notification service
