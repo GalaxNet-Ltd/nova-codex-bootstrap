@@ -8,9 +8,9 @@ AGENT_SERVICE_LABEL="dev.galaxnet.novascale.agent"
 AGENT_SERVICE_FILE="novascale-agent.service"
 DEFAULT_PORT="14500"
 DEFAULT_SCHEME="ws"
-DEFAULT_AGENT_VERSION="0.1.3"
 DEFAULT_NOTIFICATION_ENDPOINT="https://nova-push.galaxnet.dev"
 AGENT_RELEASE_BASE_URL="https://github.com/GalaxNet-Ltd/nova-codex-bootstrap/releases/download"
+AGENT_LATEST_RELEASE_API_URL="https://api.github.com/repos/GalaxNet-Ltd/nova-codex-bootstrap/releases/latest"
 CONFIG_DIR="${HOME}/.codex"
 CONFIG_FILE="${CONFIG_DIR}/novascale-codex-host.env"
 TOKEN_FILE="${CONFIG_DIR}/novascale-app-server-token"
@@ -30,7 +30,7 @@ codex_bin=""
 codex_dir=""
 agent_binary_source=""
 dev_agent=0
-agent_release_version="$DEFAULT_AGENT_VERSION"
+agent_release_version=""
 agent_version_set=0
 resolved_agent_binary=""
 agent_download_dir=""
@@ -56,6 +56,8 @@ notification_disabled=0
 notification_endpoint="$DEFAULT_NOTIFICATION_ENDPOINT"
 notification_endpoint_set=0
 no_hook_install=0
+notifications_only=0
+wrapper_configuration_requested=0
 
 cleanup_agent_download() {
   [ -n "$agent_download_dir" ] || return 0
@@ -84,6 +86,9 @@ Options:
   --print-only          Do not configure service, only print current pairing info.
   --no-qr               Print the pairing URI without using qrencode.
   --yes                 Reconfigure an existing setup without prompting.
+  --notifications-only  Install or update only the notification agent and
+                        Codex hooks. Never modify or restart the Codex App
+                        Server wrapper.
   --enable-notifications
                         Install and configure the notification agent. This is
                         the default.
@@ -92,7 +97,8 @@ Options:
                         https://nova-push.galaxnet.dev
   --dev-agent           Install an unsigned local agent build from notifications/dist.
   --agent-binary <path> Install this prebuilt novascale-agent binary.
-  --agent-version <ver> Download this pinned agent release. Default: 0.1.3.
+  --agent-version <ver> Download this exact agent release instead of the
+                        latest stable GitHub release.
   --no-hook-install     Install the agent without modifying Codex hooks.json.
   --no-notifications    Skip notification-agent setup and leave any existing
                         notification-agent installation unchanged.
@@ -547,8 +553,55 @@ agent_platform() {
 
 validate_agent_release_version() {
   case "$agent_release_version" in
-    ''|*[!0-9A-Za-z._-]*) die "Invalid notification-agent release version" ;;
+    ''|*[!0-9A-Za-z._+-]*) die "Invalid notification-agent release version" ;;
   esac
+}
+
+validate_stable_agent_release_version() {
+  awk -v candidate="$1" '
+    BEGIN {
+      if (length(candidate) == 0 || length(candidate) > 128 || candidate ~ /[+]$/) exit 1
+      version_count = split(candidate, version_parts, "[+]")
+      if (version_count > 2 || index(version_parts[1], "-") != 0) exit 1
+      core_count = split(version_parts[1], core_parts, "[.]")
+      if (core_count != 3) exit 1
+      for (index_value = 1; index_value <= core_count; index_value++) {
+        if (core_parts[index_value] !~ /^[0-9][0-9]*$/) exit 1
+        if (length(core_parts[index_value]) > 1 && substr(core_parts[index_value], 1, 1) == "0") exit 1
+      }
+      if (version_count == 2) {
+        build_count = split(version_parts[2], build_parts, "[.]")
+        if (build_count == 0) exit 1
+        for (index_value = 1; index_value <= build_count; index_value++) {
+          if (build_parts[index_value] !~ /^[0-9A-Za-z-][0-9A-Za-z-]*$/) exit 1
+        }
+      }
+    }
+  ' </dev/null || die "GitHub latest release is not a stable notification-agent semantic version"
+}
+
+ensure_agent_download_dir() {
+  if [ -z "$agent_download_dir" ]; then
+    agent_download_dir="$(mktemp -d "${TMPDIR:-/tmp}/novascale-agent-download.XXXXXX")"
+    chmod 700 "$agent_download_dir"
+    : >"${agent_download_dir}/.novascale-agent-download"
+  fi
+}
+
+json_key_count() {
+  awk -v needle="\"$1\":" '
+    {
+      text = text $0
+    }
+    END {
+      count = 0
+      while ((position = index(text, needle)) > 0) {
+        count++
+        text = substr(text, position + length(needle))
+      }
+      print count
+    }
+  '
 }
 
 download_file() {
@@ -569,6 +622,41 @@ download_file() {
   else
     die "curl or wget is required to download the notification agent"
   fi
+}
+
+resolve_latest_agent_release() {
+  ensure_agent_download_dir
+  metadata_path="${agent_download_dir}/latest-release.json"
+  notice "Resolving the latest stable NovaScale notification agent from GitHub."
+  if ! download_file "$AGENT_LATEST_RELEASE_API_URL" "$metadata_path"; then
+    die "Could not resolve the latest stable notification-agent release from GitHub"
+  fi
+  metadata_size="$(wc -c <"$metadata_path" | tr -d ' ')"
+  [ "$metadata_size" -le 65536 ] 2>/dev/null || die "GitHub release metadata is unexpectedly large"
+  release_metadata="$(tr -d '[:space:]' <"$metadata_path")"
+  [ -n "$release_metadata" ] || die "GitHub release metadata is empty"
+  [ "$(printf '%s\n' "$release_metadata" | json_key_count tag_name)" -eq 1 ] 2>/dev/null ||
+    die "GitHub release metadata has an invalid tag"
+  [ "$(printf '%s\n' "$release_metadata" | json_key_count draft)" -eq 1 ] 2>/dev/null ||
+    die "GitHub release metadata has an invalid draft state"
+  [ "$(printf '%s\n' "$release_metadata" | json_key_count prerelease)" -eq 1 ] 2>/dev/null ||
+    die "GitHub release metadata has an invalid prerelease state"
+  case "$release_metadata" in
+    *'"draft":false'*) ;;
+    *) die "GitHub latest release is not a published stable release" ;;
+  esac
+  case "$release_metadata" in
+    *'"prerelease":false'*) ;;
+    *) die "GitHub latest release is not a published stable release" ;;
+  esac
+  release_tag="$(printf '%s\n' "$release_metadata" |
+    sed -n 's/^.*"tag_name":"\([^"]*\)".*$/\1/p')"
+  case "$release_tag" in
+    agent-v*) agent_release_version="${release_tag#agent-v}" ;;
+    *) die "GitHub latest release is not a stable notification-agent release" ;;
+  esac
+  validate_stable_agent_release_version "$agent_release_version"
+  notice "Latest stable NovaScale notification agent: $agent_release_version."
 }
 
 calculate_sha256() {
@@ -606,11 +694,7 @@ download_agent_release() {
     *) die "Unsupported notification-agent platform: $platform" ;;
   esac
 
-  if [ -z "$agent_download_dir" ]; then
-    agent_download_dir="$(mktemp -d "${TMPDIR:-/tmp}/novascale-agent-download.XXXXXX")"
-    chmod 700 "$agent_download_dir"
-    : >"${agent_download_dir}/.novascale-agent-download"
-  fi
+  ensure_agent_download_dir
   archive_path="${agent_download_dir}/${archive_name}"
   checksums_path="${agent_download_dir}/SHA256SUMS"
   package_dir="${agent_download_dir}/package"
@@ -703,6 +787,9 @@ find_agent_binary() {
       fi
     done
     die "--dev-agent was provided, but no local agent build exists for ${platform}"
+  fi
+  if [ -z "$agent_release_version" ]; then
+    resolve_latest_agent_release
   fi
   if [ -x "$AGENT_PATH" ]; then
     installed_agent_version="$("$AGENT_PATH" version 2>/dev/null || true)"
@@ -1370,25 +1457,30 @@ while [ "$#" -gt 0 ]; do
       [ "$#" -ge 2 ] || die "--listen requires a value"
       listen="$2"
       listen_set=1
+      wrapper_configuration_requested=1
       shift 2
       ;;
     --port)
       [ "$#" -ge 2 ] || die "--port requires a value"
       port="$2"
+      wrapper_configuration_requested=1
       shift 2
       ;;
     --host)
       [ "$#" -ge 2 ] || die "--host requires a value"
       host="$2"
+      wrapper_configuration_requested=1
       shift 2
       ;;
     --name)
       [ "$#" -ge 2 ] || die "--name requires a value"
       name="$2"
+      wrapper_configuration_requested=1
       shift 2
       ;;
     --rotate-token)
       rotate_token=1
+      wrapper_configuration_requested=1
       shift
       ;;
     --no-start)
@@ -1397,6 +1489,7 @@ while [ "$#" -gt 0 ]; do
       ;;
     --print-only)
       print_only=1
+      wrapper_configuration_requested=1
       shift
       ;;
     --no-qr)
@@ -1405,6 +1498,12 @@ while [ "$#" -gt 0 ]; do
       ;;
     --yes|-y)
       assume_yes=1
+      shift
+      ;;
+    --notifications-only)
+      notifications_only=1
+      notification_requested=1
+      notification_setup_explicit=1
       shift
       ;;
     --enable-notifications)
@@ -1469,7 +1568,30 @@ fi
 if [ "$agent_version_set" -eq 1 ] && { [ "$dev_agent" -eq 1 ] || [ -n "$agent_binary_source" ]; }; then
   die "--agent-version cannot be combined with --dev-agent or --agent-binary"
 fi
-validate_agent_release_version
+if [ -n "$agent_release_version" ]; then
+  validate_agent_release_version
+fi
+
+if [ "$notifications_only" -eq 1 ]; then
+  [ "$wrapper_configuration_requested" -eq 0 ] || \
+    die "--notifications-only cannot be combined with wrapper configuration or --print-only"
+  preflight_notification_agent
+  configure_notification_agent
+  notification_host_id="$(read_notification_host_id || true)"
+  notice ""
+  notice "Notification maintenance complete."
+  notice "Notification agent: ${AGENT_PATH}"
+  if [ -n "$notification_host_id" ]; then
+    notice "Notification host ID: ${notification_host_id}"
+  fi
+  notice "Codex App Server wrapper: unchanged"
+  if [ "$no_hook_install" -eq 1 ]; then
+    notice "Codex hooks were not changed because --no-hook-install was provided."
+  else
+    notice "Codex hooks: configured"
+  fi
+  exit 0
+fi
 
 if [ "$print_only" -eq 1 ]; then
   load_existing_config

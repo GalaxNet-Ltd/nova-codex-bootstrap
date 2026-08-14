@@ -4,7 +4,7 @@
 
 Host-side setup utility for NovaScale Codex integration. It configures a user-level `codex app-server` service, creates a capability token, and prints a pairing URI for NovaScale iOS.
 
-The wrapper uses the official `codex` command already installed on the host and the user's existing Tailscale networking mesh. When remote notifications are enabled, setup also installs NovaScale's open-source notification agent from a signed, pinned release.
+The wrapper uses the official `codex` command already installed on the host and the user's existing Tailscale networking mesh. When remote notifications are enabled, setup also installs NovaScale's open-source notification agent from the latest stable signed GitHub release.
 
 ## Setup
 
@@ -39,7 +39,7 @@ explicitly supplied or no usable token exists.
 ### Backward compatibility
 
 Host notification support is enabled by default for every user. The updated
-bootstrap downloads the pinned signed agent release, creates the host identity,
+bootstrap resolves and downloads the latest stable signed agent release, creates the host identity,
 and lets the agent enroll itself through the public production endpoint. This
 requires no app, APNs token, or transferred enrollment credential. It prepares
 the host but does not activate paid remote delivery. Remote Push is enabled
@@ -192,12 +192,25 @@ An unknown state never triggers a restart. The agent never restarts the wrapper
 automatically or exposes restart control over the notification channel, so it
 cannot interrupt a long-running turn or goal in the background.
 
-For notification-enabled setup, bootstrap downloads the pinned agent release
-for the host platform. An already-enrolled agent keeps its existing identity:
+For notification-enabled setup, bootstrap resolves GitHub's latest published
+stable agent release and downloads it for the host platform. An already-enrolled
+agent keeps its existing identity:
 
 ```sh
 ./setup.sh --yes --enable-notifications
 ```
+
+For notification maintenance, update only the agent and Codex hooks:
+
+```sh
+./setup.sh --notifications-only
+```
+
+This mode preserves the enrolled host ID, private key, backend, and durable
+queue. It may restart only the notification daemon when its binary changed.
+The Codex wrapper config, pairing token, helper, service, and running process
+are never modified or restarted. Add `--no-start` to install an update without
+restarting the currently running notification daemon.
 
 During an agent redeploy, setup asks the running daemon for its version and
 compares the installed and incoming binaries. It restarts only the notification
@@ -214,15 +227,18 @@ an explicit endpoint is needed only for local development or another backend:
   --notification-endpoint https://<NOTIFICATION_ENDPOINT>
 ```
 
-The bootstrap currently pins stable agent `0.1.3`. Use
-`--agent-version <version>` to select another published immutable release.
-Bootstrap downloads the exact platform archive and `SHA256SUMS` from the
-corresponding `agent-v<version>` GitHub Release, rejects unexpected archive
-paths or links, verifies the SHA-256 digest and embedded version, and never
-falls back to an unsigned build. macOS additionally requires a valid Developer
-ID signature, notarization ticket, and the expected universal architectures
-before the binary is executed. A matching installed version is reused without
-a network download.
+By default, bootstrap queries GitHub's `releases/latest` API and accepts only
+a published, non-prerelease `agent-v<stable-semantic-version>` tag. Use
+`--agent-version <version>` to select an exact published immutable release
+and bypass the latest-release lookup. Bootstrap downloads the exact platform
+archive and `SHA256SUMS` from the corresponding `agent-v<version>` GitHub
+Release, rejects unexpected archive paths or links, verifies the SHA-256 digest
+and embedded version, and never falls back to an unsigned build. macOS
+additionally requires a valid Developer ID signature, notarization ticket, and
+the expected universal architectures before the binary is executed. A matching
+installed explicit version is reusable without network access. If the default
+latest-release lookup fails or returns invalid metadata, setup stops before
+modifying the installation.
 
 The daemon proves possession of the host private key to obtain a short-lived,
 single-use token bound to the same host ID and public key, keeps it only in

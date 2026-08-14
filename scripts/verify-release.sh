@@ -135,7 +135,7 @@ cat >"$enrollment_agent" <<'EOF'
 set -eu
 case "${1:-}" in
   version)
-    printf '%s\n' '0.1.3'
+    printf '%s\n' '0.1.4'
     ;;
   init)
     shift
@@ -154,6 +154,9 @@ case "${1:-}" in
   registration-state)
     printf 'registration-state\n' >>"$NOVASCALE_TEST_AGENT_LOG"
     sed -n 's/.*"registrationState":"\([^"]*\)".*/\1/p' "$HOME/.config/novascale-agent/config.json"
+    ;;
+  host-id)
+    printf '%s\n' '11111111-2222-3333-4444-555555555555'
     ;;
   endpoint)
     printf 'endpoint\n' >>"$NOVASCALE_TEST_AGENT_LOG"
@@ -187,7 +190,7 @@ mkdir -p "$release_fixture_dir" "$release_package_dir/THIRD_PARTY_LICENSES" "$do
 cp "$enrollment_agent" "$release_package_dir/novascale-agent"
 cp "$root_dir/LICENSE" "$release_package_dir/LICENSE"
 cp -R "$root_dir/notifications/third_party_licenses/." "$release_package_dir/THIRD_PARTY_LICENSES/"
-release_archive="novascale-agent_0.1.3_linux_amd64.tar.gz"
+release_archive="novascale-agent_0.1.4_linux_amd64.tar.gz"
 tar -C "$release_package_dir" -czf "$release_fixture_dir/$release_archive" \
   novascale-agent LICENSE THIRD_PARTY_LICENSES
 if command -v shasum >/dev/null 2>&1; then
@@ -195,6 +198,9 @@ if command -v shasum >/dev/null 2>&1; then
 else
   (cd "$release_fixture_dir" && sha256sum "$release_archive" >SHA256SUMS)
 fi
+cat >"$release_fixture_dir/latest" <<'EOF'
+{"tag_name":"agent-v0.1.4","draft":false,"prerelease":false}
+EOF
 cat >"$download_stub_dir/curl" <<'EOF'
 #!/bin/sh
 set -eu
@@ -227,12 +233,48 @@ case "${1:-}" in
   *) exit 1 ;;
 esac
 EOF
-chmod 755 "$download_stub_dir/curl" "$download_stub_dir/uname"
+cat >"$download_stub_dir/systemctl" <<'EOF'
+#!/bin/sh
+set -eu
+if [ -n "${NOVASCALE_TEST_SYSTEMCTL_LOG:-}" ]; then
+  printf '%s\n' "$*" >>"$NOVASCALE_TEST_SYSTEMCTL_LOG"
+fi
+exit 0
+EOF
+chmod 755 "$download_stub_dir/curl" "$download_stub_dir/uname" "$download_stub_dir/systemctl"
 download_test_path="$download_stub_dir:$test_path"
+
+invalid_release_metadata_dir="$temporary_root/invalid-release-metadata"
+invalid_release_metadata_home="$temporary_root/invalid-release-metadata-home"
+mkdir -p "$invalid_release_metadata_dir" "$invalid_release_metadata_home"
+cat >"$invalid_release_metadata_dir/latest" <<'EOF'
+{"tag_name":"agent-v0.1.5-beta.1","draft":false,"prerelease":true}
+EOF
+if HOME="$invalid_release_metadata_home" PATH="$download_test_path" NOVASCALE_TEST_AGENT_LOG="$enrollment_log" \
+  NOVASCALE_TEST_RELEASE_DIR="$invalid_release_metadata_dir" NOVASCALE_TEST_RELEASE_LOG="$release_download_log" \
+  "$root_dir/setup.sh" \
+  --listen 127.0.0.1 \
+  --host 127.0.0.1 \
+  --port "$((test_port + 2))" \
+  --no-start \
+  --no-qr \
+  --notification-endpoint http://127.0.0.1:8080 \
+  >"$temporary_root/invalid-release-metadata-output" \
+  2>"$temporary_root/invalid-release-metadata-error"
+then
+  printf 'notification setup accepted a prerelease as the latest stable agent\n' >&2
+  exit 1
+fi
+grep -q 'latest release is not a published stable release' \
+  "$temporary_root/invalid-release-metadata-error"
+test ! -e "$invalid_release_metadata_home/.codex/novascale-codex-host.env"
+test ! -e "$invalid_release_metadata_home/.local/bin/novascale-agent"
+: >"$release_download_log"
 
 bad_release_dir="$temporary_root/bad-release-fixture"
 bad_release_home="$temporary_root/bad-release-home"
 mkdir -p "$bad_release_dir" "$bad_release_home"
+cp "$release_fixture_dir/latest" "$bad_release_dir/latest"
 cp "$release_fixture_dir/$release_archive" "$bad_release_dir/$release_archive"
 printf '%064d  %s\n' 0 "$release_archive" >"$bad_release_dir/SHA256SUMS"
 if HOME="$bad_release_home" PATH="$download_test_path" NOVASCALE_TEST_AGENT_LOG="$enrollment_log" \
@@ -259,6 +301,7 @@ unsafe_release_dir="$temporary_root/unsafe-release-fixture"
 unsafe_release_package="$temporary_root/unsafe-release-package"
 unsafe_release_home="$temporary_root/unsafe-release-home"
 mkdir -p "$unsafe_release_dir" "$unsafe_release_package/THIRD_PARTY_LICENSES" "$unsafe_release_home"
+cp "$release_fixture_dir/latest" "$unsafe_release_dir/latest"
 ln -s /bin/sh "$unsafe_release_package/novascale-agent"
 cp "$root_dir/LICENSE" "$unsafe_release_package/LICENSE"
 cp -R "$root_dir/notifications/third_party_licenses/." "$unsafe_release_package/THIRD_PARTY_LICENSES/"
@@ -300,9 +343,11 @@ HOME="$enrollment_home" PATH="$download_test_path" NOVASCALE_TEST_AGENT_LOG="$en
   --notification-endpoint http://127.0.0.1:8080 \
   >"$temporary_root/enrollment-output" \
   2>"$temporary_root/enrollment-error"
-grep -q 'Downloading signed NovaScale notification agent 0.1.3 for linux-amd64.' "$temporary_root/enrollment-output"
+grep -q 'Latest stable NovaScale notification agent: 0.1.4.' "$temporary_root/enrollment-output"
+grep -q 'Downloading signed NovaScale notification agent 0.1.4 for linux-amd64.' "$temporary_root/enrollment-output"
 grep -q '^Finish notification setup:$' "$temporary_root/enrollment-output"
 grep -q '^     novascale-codex restart$' "$temporary_root/enrollment-output"
+test "$(grep -c '^latest$' "$release_download_log")" -eq 1
 test "$(grep -c '^SHA256SUMS$' "$release_download_log")" -eq 1
 test "$(grep -c "^${release_archive}$" "$release_download_log")" -eq 1
 cmp -s "$enrollment_agent" "$enrollment_home/.local/bin/novascale-agent"
@@ -332,8 +377,27 @@ HOME="$enrollment_home" PATH="$download_test_path" NOVASCALE_TEST_AGENT_LOG="$en
   --enable-notifications \
   >"$temporary_root/enrollment-redeploy-output" \
   2>"$temporary_root/enrollment-redeploy-error"
-test ! -s "$release_download_log"
+test "$(grep -c '^latest$' "$release_download_log")" -eq 1
+test "$(wc -l <"$release_download_log" | tr -d ' ')" -eq 1
 grep -q '^registration-state$' "$enrollment_log"
+grep -q '^pending identity preserved$' "$enrollment_log"
+
+: >"$enrollment_log"
+: >"$release_download_log"
+HOME="$enrollment_home" PATH="$download_test_path" NOVASCALE_TEST_AGENT_LOG="$enrollment_log" \
+  NOVASCALE_TEST_RELEASE_DIR="$release_fixture_dir" NOVASCALE_TEST_RELEASE_LOG="$release_download_log" \
+  "$root_dir/setup.sh" \
+  --listen 127.0.0.1 \
+  --host 127.0.0.1 \
+  --port "$((test_port + 3))" \
+  --yes \
+  --no-start \
+  --no-qr \
+  --enable-notifications \
+  --agent-version 0.1.4 \
+  >"$temporary_root/enrollment-pinned-redeploy-output" \
+  2>"$temporary_root/enrollment-pinned-redeploy-error"
+test ! -s "$release_download_log"
 grep -q '^pending identity preserved$' "$enrollment_log"
 
 printf '%s\n' '{"version":1,"hostId":"host-test","endpoint":"http://127.0.0.1:8080","registrationState":"active"}' \
@@ -359,6 +423,91 @@ if grep -q '^switch-backend ' "$enrollment_log"; then
 fi
 grep -q '"endpoint":"http://127.0.0.1:8080"' "$enrollment_home/.config/novascale-agent/config.json"
 grep -q '"registrationState":"active"' "$enrollment_home/.config/novascale-agent/config.json"
+
+notifications_only_home="$temporary_root/notifications-only-home"
+notifications_only_before="$temporary_root/notifications-only-before"
+notifications_only_systemctl_log="$temporary_root/notifications-only-systemctl.log"
+notifications_only_agent_log="$temporary_root/notifications-only-agent.log"
+notifications_only_release_log="$temporary_root/notifications-only-release.log"
+mkdir -p \
+  "$notifications_only_home/.codex" \
+  "$notifications_only_home/.local/bin" \
+  "$notifications_only_home/.config/novascale-agent" \
+  "$notifications_only_home/.config/systemd/user" \
+  "$notifications_only_before"
+printf '%s\n' 'wrapper-config-sentinel' \
+  >"$notifications_only_home/.codex/novascale-codex-host.env"
+printf '%s\n' 'wrapper-token-sentinel' \
+  >"$notifications_only_home/.codex/novascale-app-server-token"
+printf '%s\n' 'wrapper-helper-sentinel' \
+  >"$notifications_only_home/.local/bin/novascale-codex"
+printf '%s\n' 'wrapper-service-sentinel' \
+  >"$notifications_only_home/.config/systemd/user/novascale-codex.service"
+printf '%s\n' '{"version":1,"hostId":"host-test","endpoint":"http://127.0.0.1:8080","registrationState":"active"}' \
+  >"$notifications_only_home/.config/novascale-agent/config.json"
+sed 's/0\.1\.4/0.1.3/g' "$enrollment_agent" \
+  >"$notifications_only_home/.local/bin/novascale-agent"
+chmod 755 "$notifications_only_home/.local/bin/novascale-agent"
+cp "$notifications_only_home/.codex/novascale-codex-host.env" \
+  "$notifications_only_before/novascale-codex-host.env"
+cp "$notifications_only_home/.codex/novascale-app-server-token" \
+  "$notifications_only_before/novascale-app-server-token"
+cp "$notifications_only_home/.local/bin/novascale-codex" \
+  "$notifications_only_before/novascale-codex"
+cp "$notifications_only_home/.config/systemd/user/novascale-codex.service" \
+  "$notifications_only_before/novascale-codex.service"
+cp "$notifications_only_home/.config/novascale-agent/config.json" \
+  "$notifications_only_before/agent-config.json"
+
+HOME="$notifications_only_home" PATH="$download_test_path" \
+  NOVASCALE_TEST_AGENT_LOG="$notifications_only_agent_log" \
+  NOVASCALE_TEST_RELEASE_DIR="$release_fixture_dir" \
+  NOVASCALE_TEST_RELEASE_LOG="$notifications_only_release_log" \
+  NOVASCALE_TEST_SYSTEMCTL_LOG="$notifications_only_systemctl_log" \
+  "$root_dir/setup.sh" --notifications-only \
+  >"$temporary_root/notifications-only-output" \
+  2>"$temporary_root/notifications-only-error"
+
+cmp "$notifications_only_before/novascale-codex-host.env" \
+  "$notifications_only_home/.codex/novascale-codex-host.env"
+cmp "$notifications_only_before/novascale-app-server-token" \
+  "$notifications_only_home/.codex/novascale-app-server-token"
+cmp "$notifications_only_before/novascale-codex" \
+  "$notifications_only_home/.local/bin/novascale-codex"
+cmp "$notifications_only_before/novascale-codex.service" \
+  "$notifications_only_home/.config/systemd/user/novascale-codex.service"
+cmp "$notifications_only_before/agent-config.json" \
+  "$notifications_only_home/.config/novascale-agent/config.json"
+cmp "$enrollment_agent" "$notifications_only_home/.local/bin/novascale-agent"
+grep -q '^Existing active notification-agent identity detected; preserving its host ID and private key\.$' \
+  "$temporary_root/notifications-only-output"
+grep -q '^Codex App Server wrapper: unchanged$' \
+  "$temporary_root/notifications-only-output"
+grep -q '^Notification host ID: 11111111-2222-3333-4444-555555555555$' \
+  "$temporary_root/notifications-only-output"
+grep -q '^--user restart novascale-agent.service$' \
+  "$notifications_only_systemctl_log"
+if grep -q 'novascale-codex\.service' "$notifications_only_systemctl_log"; then
+  printf 'notification-only maintenance touched the Codex wrapper service\n' >&2
+  exit 1
+fi
+test "$(grep -c '^latest$' "$notifications_only_release_log")" -eq 1
+test "$(grep -c '^SHA256SUMS$' "$notifications_only_release_log")" -eq 1
+test "$(grep -c "^${release_archive}$" "$notifications_only_release_log")" -eq 1
+
+if HOME="$notifications_only_home" PATH="$download_test_path" \
+  NOVASCALE_TEST_AGENT_LOG="$notifications_only_agent_log" \
+  NOVASCALE_TEST_RELEASE_DIR="$release_fixture_dir" \
+  NOVASCALE_TEST_RELEASE_LOG="$notifications_only_release_log" \
+  "$root_dir/setup.sh" --notifications-only --listen 127.0.0.1 \
+  >"$temporary_root/notifications-only-conflict-output" \
+  2>"$temporary_root/notifications-only-conflict-error"
+then
+  printf 'notification-only maintenance accepted wrapper configuration options\n' >&2
+  exit 1
+fi
+grep -q -- '--notifications-only cannot be combined with wrapper configuration' \
+  "$temporary_root/notifications-only-conflict-error"
 
 if command -v go >/dev/null 2>&1; then
   (
@@ -410,5 +559,6 @@ printf 'release verification passed\n'
 printf '  notification opt-out bootstrap: wrapper only\n'
 printf '  redeploy token: preserved unless --rotate-token is explicit\n'
 printf '  notification bootstrap: autonomous identity-bound enrollment with daemon-owned retry\n'
+printf '  notification-only maintenance: wrapper state isolated and enrollment identity preserved\n'
 printf '  embedded helper: synchronized\n'
 printf '  credential shapes: clear\n'

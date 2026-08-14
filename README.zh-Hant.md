@@ -4,7 +4,7 @@
 
 NovaScale Codex Host 是 NovaScale Codex 整合的主機端設定工具。它會設定使用者層級的 `codex app-server` 服務，建立 capability token，並列印可匯入 NovaScale iOS 的配對 URI。
 
-App Server wrapper 使用主機上已安裝的官方 `codex` 指令和使用者既有的 Tailscale 網路。啟用遠端通知時，設定腳本也會從固定版本的已簽署 Release 安裝 NovaScale 的開源通知 agent。
+App Server wrapper 使用主機上已安裝的官方 `codex` 指令和使用者既有的 Tailscale 網路。啟用遠端通知時，設定腳本也會從 GitHub 最新穩定的已簽署 Release 安裝 NovaScale 的開源通知 agent。
 
 ## 設定
 
@@ -38,7 +38,7 @@ token。
 
 ### 向後相容性
 
-所有使用者的主機通知支援都預設開啟。bootstrap 會自動下載固定版本的已簽署
+所有使用者的主機通知支援都預設開啟。bootstrap 會自動解析並下載 GitHub 最新穩定的已簽署
 agent、建立主機身分，並讓 agent 透過預設正式端點自主註冊；不需要 App、APNs
 token 或傳遞註冊憑據。這只會讓主機具備通知能力，不會啟用付費的遠端通知傳遞。遠端推播需要在
 Codex 設定中另外啟用，並且需要 Pro 訂閱。關閉主機通知支援會傳入
@@ -171,14 +171,28 @@ APNs payload 只包含通用通知文案，以及不透明的 event、host、thr
 最小化事件，並上傳簽署事件。hook 始終回傳 `{}`，不會替 Codex 作出任何
 決定。
 
-啟用通知的 bootstrap 會下載適合主機平台的固定 agent Release。已註冊的
-agent 會保留現有身分。首次註冊時，agent 使用本機主機私鑰證明身分，取得與
+啟用通知的 bootstrap 會從 GitHub 解析最新發布的穩定 agent Release，並下載
+適合主機平台的版本。已註冊的 agent 會保留現有身分。首次註冊時，agent 使用本機主機私鑰證明身分，取得與
 host ID 和公鑰綁定的短效、一次性 token，只保留於記憶體，並用於另一個已簽署
 的註冊請求。agent daemon 會在背景自動重試。
 
-目前 bootstrap 固定使用穩定版 agent `0.1.3`。bootstrap 會驗證平台封裝、
-`SHA256SUMS`、封裝路徑和內嵌版本，且不會回退到未簽署建置。macOS 還會驗證
-Developer ID 簽章、公證票據及預期的 universal 架構。
+只維護通知 agent 和 Codex hooks 時，執行：
+
+```sh
+./setup.sh --notifications-only
+```
+
+此模式會保留已註冊的 host ID、私鑰、後端和持久化佇列。二進位檔變更時，
+它只會重新啟動通知 daemon；不會修改或重新啟動 Codex wrapper 的設定、配對
+token、helper、服務或執行中的程序。加入 `--no-start` 可以安裝更新但不重新
+啟動目前執行中的通知 daemon。
+
+預設情況下，bootstrap 會查詢 GitHub 的 `releases/latest` API，並且只接受
+非草稿、非預先發佈且標籤符合 `agent-v<穩定語意版本>` 的 Release。使用
+`--agent-version <版本>` 可以選擇精確的已發佈不可變版本，並跳過最新版本查詢。
+bootstrap 會驗證平台封裝、`SHA256SUMS`、封裝路徑和內嵌版本，且不會回退到
+未簽署建置。macOS 還會驗證 Developer ID 簽章、公證票據及預期的 universal
+架構。如果預設查詢失敗或中繼資料無效，setup 會在修改安裝之前停止。
 
 通知端點必須使用 HTTPS。只有透過 `localhost`、`127.0.0.0/8` 或 `::1`
 存取的 loopback 開發服務可以使用 HTTP。

@@ -22,7 +22,7 @@ separate requirements.
 | Updated app + new host | Host notification support defaults on for every user; the user can choose the lean `--no-notifications` path. Remote delivery remains a separate Pro subscription setting. |
 
 The default invocation must continue to pass `scripts/verify-release.sh`. It
-installs the pinned agent and stages autonomous enrollment without requiring an
+resolves the latest stable agent and stages autonomous enrollment without requiring an
 app-provided token or other enrollment input:
 
 ```sh
@@ -49,7 +49,7 @@ default setup installs the agent and stages autonomous enrollment. Existing app
 pairing must still work, prompting and approvals must remain unchanged, and
 uninstall must remove the selected services.
 
-After publishing the pinned agent release, run notification validation
+After publishing the stable agent release, run notification validation
 separately:
 
 ```sh
@@ -129,17 +129,30 @@ the inner executable's Developer ID signature before upload. Because the agent
 is a standalone executable rather than an app bundle, both release and
 bootstrap use `codesign --check-notarization` to verify that ticket.
 
-Automatic bootstrap installation pins the stable `0.1.3` release. It
-downloads only from this repository's HTTPS GitHub Release URL, verifies the
-matching `SHA256SUMS` entry, rejects unexpected archive paths and links,
-requires the embedded version to match, and fails closed instead of falling
-back to a repository build or unsigned file. macOS also requires Developer ID
-signature and notarization-ticket verification, plus both universal
-architectures, before execution. `--agent-version` supports a different
-explicitly selected release; an already installed matching version is usable
-offline.
+Automatic bootstrap installation queries this repository's GitHub
+`releases/latest` API and accepts only a published, non-prerelease
+`agent-v<stable-semantic-version>` tag. It downloads only from the
+corresponding HTTPS GitHub Release URL, verifies the matching `SHA256SUMS`
+entry, rejects unexpected archive paths and links, requires the embedded
+version to match, and fails closed instead of falling back to a repository
+build or unsigned file. macOS also requires Developer ID signature and
+notarization-ticket verification, plus both universal architectures, before
+execution. `--agent-version` supports an explicitly selected immutable
+release and bypasses latest discovery; an already installed matching explicit
+version is usable offline.
+
+GitHub Releases in this repository are reserved for stable `agent-v*`
+publishing. A newer non-agent, draft, or prerelease entry must never become the
+default bootstrap input; setup rejects it before modifying an installation.
 
 Keep `--dev-agent` available only as an explicit developer path.
+
+Host maintenance should invoke `setup.sh --notifications-only`. Release
+verification must prove that this path preserves the enrolled agent identity
+and backend, updates only the agent, hooks, and agent service, and never reads,
+rewrites, stops, or restarts the Codex wrapper configuration, capability token,
+helper, service, or process. A stale agent may restart after the replacement is
+ready; `--no-start` must leave its current daemon untouched.
 
 ## Rollout order
 
@@ -147,12 +160,13 @@ Deploy backend autonomous-enrollment support before enabling fresh notification
 enrollment in bootstrap. That backend change does not alter authentication for
 already-enrolled hosts sending signed events.
 
-1. Tag the reviewed commit as `agent-v0.1.3` and publish the signed host-agent
-   release without first moving the public bootstrap branch.
+1. Tag the reviewed commit as `agent-v<VERSION>` and publish the signed
+   host-agent release without first moving the public bootstrap branch.
 2. Verify the release archives, `SHA256SUMS`, macOS signature, and accepted
    notarization ticket.
-3. Push the bootstrap branch only after the pinned `0.1.3` artifacts are
-   available, then validate default bootstrap with an existing app release.
+3. Confirm GitHub reports `agent-v<VERSION>` as the latest stable release,
+   then push the bootstrap branch and validate default bootstrap with an
+   existing app release.
 4. Point the debug app bootstrap sheet at this branch, leave notifications on
    by default, and validate autonomous host enrollment and lifecycle
    notifications with a test app.
