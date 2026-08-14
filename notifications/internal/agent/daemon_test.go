@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -253,6 +254,92 @@ func TestDaemonEnrollmentRetriesThenReleasesQueuedEvents(t *testing.T) {
 	}
 	if _, err := os.Stat(tokenPath); !os.IsNotExist(err) {
 		t.Fatalf("pending setup token still exists after enrollment: %v", err)
+	}
+}
+
+func TestActiveDaemonRefreshesReportedVersionOnceWithoutChangingIdentity(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "config.json")
+	config := Config{
+		Version: 1, HostID: "host-1", Endpoint: "https://notify.test",
+		RegistrationState: RegistrationActive,
+	}
+	if err := SaveConfig(configPath, config); err != nil {
+		t.Fatal(err)
+	}
+	enrollmentToken := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{6}, 32))
+	registrationCompleted := make(chan struct{}, 1)
+	var intentAttempts, registrationAttempts atomic.Int32
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch request.URL.Path {
+		case "/v1/hosts/enrollment-intents":
+			intentAttempts.Add(1)
+			return testJSONResponse(http.StatusCreated, map[string]any{
+				"enrollmentToken": enrollmentToken,
+				"expiresAt":       time.Now().Add(time.Hour).UTC(),
+			}), nil
+		case "/v1/hosts/register":
+			registrationAttempts.Add(1)
+			body, readErr := io.ReadAll(request.Body)
+			if readErr != nil {
+				t.Error(readErr)
+			}
+			var registration RegisterRequest
+			if err := json.Unmarshal(body, &registration); err != nil {
+				t.Error(err)
+			}
+			if registration.HostID != config.HostID || registration.AgentVersion != "1.2.3-test" || registration.PublicKey != base64.RawURLEncoding.EncodeToString(publicKey) {
+				t.Errorf("refreshed registration = %+v", registration)
+			}
+			select {
+			case registrationCompleted <- struct{}{}:
+			default:
+			}
+			return testResponse(http.StatusCreated, "201 Created"), nil
+		default:
+			t.Errorf("unexpected request path %q", request.URL.Path)
+			return testResponse(http.StatusNotFound, "404 Not Found"), nil
+		}
+	})}
+	daemon := &Daemon{
+		Config: config, ConfigPath: configPath, PrivateKey: privateKey,
+		Version: "1.2.3-test", Client: client,
+		enrollmentPoll: 5 * time.Millisecond, enrollmentMin: 5 * time.Millisecond,
+		enrollmentMax: 10 * time.Millisecond,
+	}
+	daemon.setDefaults()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		daemon.enrollmentLoop(ctx)
+		close(done)
+	}()
+	select {
+	case <-registrationCompleted:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("active daemon did not refresh its reported version")
+	}
+	time.Sleep(25 * time.Millisecond)
+	cancel()
+	<-done
+	if intentAttempts.Load() != 1 || registrationAttempts.Load() != 1 {
+		t.Fatalf(
+			"version refresh attempts: intents=%d registrations=%d",
+			intentAttempts.Load(),
+			registrationAttempts.Load(),
+		)
+	}
+	saved, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.HostID != config.HostID || saved.RegistrationState != RegistrationActive {
+		t.Fatalf("version refresh changed identity or state: %+v", saved)
 	}
 }
 

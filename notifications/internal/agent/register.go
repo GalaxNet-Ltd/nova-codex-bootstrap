@@ -102,6 +102,9 @@ func RegisterHost(ctx context.Context, client *http.Client, endpoint, enrollment
 }
 
 func registrationBody(hostID string, privateKey ed25519.PrivateKey, version string) ([]byte, error) {
+	if len(privateKey) != ed25519.PrivateKeySize {
+		return nil, errors.New("invalid host private key")
+	}
 	return json.Marshal(RegisterRequest{
 		HostID:       hostID,
 		PublicKey:    base64.RawURLEncoding.EncodeToString(privateKey.Public().(ed25519.PublicKey)),

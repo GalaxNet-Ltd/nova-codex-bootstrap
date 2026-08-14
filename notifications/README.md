@@ -97,7 +97,10 @@ request a short-lived token bound to the host ID and public key, keeps it only
 in memory, and consumes it in a separately signed registration request. It
 retries transient failures with backoff across daemon restarts. Agents upgrading
 from the prerelease `needs_setup_token` state automatically resume using the
-same identity. Normal redeploys preserve active and pending host identities.
+same identity. An already-active agent repeats the signed registration once
+after daemon startup so the backend learns the running agent version; this
+preserves the existing host ID and private key. Normal redeploys preserve active
+and pending host identities.
 
 `switch-backend` preserves the existing host ID, Ed25519 private key, queued
 events, Codex App Server capability token, and wrapper configuration. It

@@ -76,6 +76,7 @@ func (d *Daemon) saveRegistrationState(state string) error {
 func (d *Daemon) enrollmentLoop(ctx context.Context) {
 	retryDelay := d.enrollmentMin
 	delay := time.Duration(0)
+	refreshActiveRegistration := true
 	for {
 		if !d.waitForEnrollment(ctx, delay) {
 			return
@@ -87,8 +88,27 @@ func (d *Daemon) enrollmentLoop(ctx context.Context) {
 		switch d.configSnapshot().RegistrationState {
 		case RegistrationActive:
 			d.discardLegacySetupTokenForState(RegistrationActive)
-			retryDelay = d.enrollmentMin
-			delay = d.enrollmentPoll
+			if refreshActiveRegistration {
+				switch d.attemptEnrollment(ctx) {
+				case enrollmentSucceeded:
+					refreshActiveRegistration = false
+					retryDelay = d.enrollmentMin
+					delay = d.enrollmentPoll
+				case enrollmentWaiting:
+					refreshActiveRegistration = false
+					retryDelay = d.enrollmentMin
+					delay = d.enrollmentPoll
+				case enrollmentRetry:
+					delay = retryDelay
+					retryDelay *= 2
+					if retryDelay > d.enrollmentMax {
+						retryDelay = d.enrollmentMax
+					}
+				}
+			} else {
+				retryDelay = d.enrollmentMin
+				delay = d.enrollmentPoll
+			}
 		case RegistrationIdentityConflict:
 			d.discardLegacySetupTokenForState(RegistrationIdentityConflict)
 			retryDelay = d.enrollmentMin
@@ -105,6 +125,7 @@ func (d *Daemon) enrollmentLoop(ctx context.Context) {
 		case RegistrationPending:
 			switch d.attemptEnrollment(ctx) {
 			case enrollmentSucceeded:
+				refreshActiveRegistration = false
 				retryDelay = d.enrollmentMin
 				delay = d.enrollmentPoll
 			case enrollmentWaiting:
