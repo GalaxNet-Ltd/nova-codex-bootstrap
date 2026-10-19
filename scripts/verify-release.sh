@@ -2,9 +2,23 @@
 
 set -eu
 
+# Each fixture supplies its own HOME. Inherited XDG roots must not redirect
+# bootstrap into the runner's real configuration or mix fixture identities.
+unset XDG_CONFIG_HOME XDG_STATE_HOME
+
 root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/novascale-release.XXXXXX")
-trap 'rm -rf "$temporary_root"' EXIT HUP INT TERM
+verification_phase=preflight
+finish_verification() {
+  result=$?
+  if [ "$result" -ne 0 ]; then
+    printf 'release verification failed during %s\n' "$verification_phase" >&2
+  fi
+  rm -rf "$temporary_root"
+  exit "$result"
+}
+trap finish_verification EXIT
+trap 'exit 1' HUP INT TERM
 umask 077
 
 stub_dir="$temporary_root/bin"
@@ -38,6 +52,7 @@ awk '
 cmp "$root_dir/bin/novascale-codex" "$embedded_helper"
 
 default_home="$temporary_root/default-home"
+verification_phase=wrapper-bootstrap
 mkdir -p "$default_home"
 HOME="$default_home" PATH="$test_path" "$root_dir/setup.sh" \
   --listen 127.0.0.1 \
@@ -123,6 +138,7 @@ if cmp -s "$temporary_root/token-before-redeploy" "$default_home/.codex/novascal
 fi
 
 enrollment_home="$temporary_root/enrollment-home"
+verification_phase=notification-enrollment
 enrollment_agent="$temporary_root/enrollment-agent"
 enrollment_log="$temporary_root/enrollment-agent.log"
 release_fixture_dir="$temporary_root/release-fixture"
@@ -425,6 +441,7 @@ grep -q '"endpoint":"http://127.0.0.1:8080"' "$enrollment_home/.config/novascale
 grep -q '"registrationState":"active"' "$enrollment_home/.config/novascale-agent/config.json"
 
 notifications_only_home="$temporary_root/notifications-only-home"
+verification_phase=notification-only-maintenance
 notifications_only_before="$temporary_root/notifications-only-before"
 notifications_only_systemctl_log="$temporary_root/notifications-only-systemctl.log"
 notifications_only_agent_log="$temporary_root/notifications-only-agent.log"
@@ -509,6 +526,7 @@ fi
 grep -q -- '--notifications-only cannot be combined with wrapper configuration' \
   "$temporary_root/notifications-only-conflict-error"
 
+verification_phase=go-checks
 if command -v go >/dev/null 2>&1; then
   (
     cd "$root_dir/notifications"
@@ -517,8 +535,10 @@ if command -v go >/dev/null 2>&1; then
   )
 fi
 
+verification_phase=agent-upgrade
 sh "$root_dir/scripts/test-notification-agent-upgrade.sh"
 
+verification_phase=release-contract-and-credential-scan
 test "$(grep -c -- '--check-notarization' "$root_dir/setup.sh")" -eq 1
 test "$(grep -c -- '--check-notarization' "$root_dir/.github/workflows/agent-release.yml")" -eq 1
 grep -q 'lipo "$candidate" -verify_arch arm64' "$root_dir/setup.sh"
