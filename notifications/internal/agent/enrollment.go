@@ -17,7 +17,7 @@ const (
 
 func (d *Daemon) setDefaults() {
 	if d.now == nil {
-		d.now = time.Now
+		d.now = ClockNow
 	}
 	if d.Client == nil {
 		d.Client = DefaultHTTPClient()

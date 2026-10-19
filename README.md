@@ -42,13 +42,15 @@ Host notification support is enabled by default for every user. The updated
 bootstrap resolves and downloads the latest stable signed agent release, creates the host identity,
 and lets the agent enroll itself through the public production endpoint. This
 requires no app, APNs token, or transferred enrollment credential. It prepares
-the host but does not activate paid remote delivery. Remote Push is enabled
-separately in Codex Settings and requires a Pro subscription.
+the host but does not activate device delivery. Remote Push is enabled
+separately in NovaScale's feature settings; eligibility and allowances are
+managed by the app and notification service.
 Turning host notification support off passes `--no-notifications` and keeps the
 host on the lean wrapper-only path.
 
-**Availability:** Remote Push requires a NovaScale Pro subscription and
-NovaScale 1.6.0 or later. Version 1.6.0 will be released soon.
+Shared Herdr support requires a matching agent release, compatible notification
+service and app. Setup checks capabilities before changing an existing agent.
+An older published agent is not assumed to support Herdr.
 
 Older apps remain compatible because notification enrollment is an
 observational side channel and does not change wrapper pairing or the Codex App
@@ -158,11 +160,11 @@ If you clone this repository instead of running the setup via `curl`:
 
 NovaScale Codex pairing is generated on your Codex host. It is not sent to GalaxNet or any website. NovaScale imports it locally and stores the token in iOS Keychain.
 
-## Privacy-Preserving Notification Titles
+## Notification privacy and display text
 
-The host agent and notification backend never receive a thread title, prompt,
-assistant response, tool input, command, patc, working directory, or transcript
-path. The agent emits only the lifecycle event type, timestamp, and non-content
+For Codex, the host agent and notification backend never receive a thread title,
+prompt, assistant response, tool input, command, patch, working directory, or
+transcript path. The agent emits only the lifecycle event type, timestamp, and non-content
 identifiers needed to correlate the host, thread, turn, and approval request.
 Each event is signed by the host key before upload.
 
@@ -172,7 +174,17 @@ host and thread identifiers to titles in the device's protected App Group
 container. Its notification service extension uses that local mapping to add a
 title after delivery. If no local title is available, the generic notification
 is shown. Thread titles therefore do not pass through the notification backend
-or APNs. APNs device tokens are encrypted at rest by the notification backend.
+or APNs. A separate local host-name fallback can identify unopened threads and
+has no time expiry. APNs device tokens are encrypted at rest by the notification
+backend.
+
+Herdr notifications additionally include bounded presentation fields supported
+by its status hook: workspace/pane identifiers, agent status/name, pane title,
+display agent and state labels. These titles and labels are free-form and may
+contain private project details. They travel through the notification backend
+and APNs so the phone can explain what needs attention. Host display names and
+remote session-name/socket bindings remain local. See the exact field limits
+and collection boundaries in [the agent documentation](notifications/README.md).
 
 ## Notification Agent Development
 
@@ -211,6 +223,21 @@ queue. It may restart only the notification daemon when its binary changed.
 The Codex wrapper config, pairing token, helper, service, and running process
 are never modified or restarted. Add `--no-start` to install an update without
 restarting the currently running notification daemon.
+
+For Herdr-only notification maintenance, without Codex installation or hooks:
+
+```sh
+./setup.sh --notifications-only --notification-source herdr
+novascale-agent herdr status --session default --json
+```
+
+This reuses the same enrolled agent, service, host identity and outgoing queue.
+It skips Codex hook migration as well as installation. A backend mismatch
+requires an explicit `switch-backend` operation. A partial failed binary update
+restores the previous agent and restarts only its notification service; hook
+observations during service downtime can still be lost. See
+[`notifications/README.md`](notifications/README.md) for the audited Herdr wire
+contract, binding lifecycle, plugin removal and best-effort limitations.
 
 During an agent redeploy, setup asks the running daemon for its version and
 compares the installed and incoming binaries. It restarts only the notification

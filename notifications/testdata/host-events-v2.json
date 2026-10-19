@@ -1,0 +1,123 @@
+[
+  {
+    "name": "legacy-codex",
+    "valid": true,
+    "body": {
+      "schemaVersion": 1,
+      "eventType": "turn_stopped",
+      "threadId": "thread-id",
+      "turnId": "turn-id",
+      "occurredAt": "2026-10-16T12:00:00Z"
+    }
+  },
+  {
+    "name": "herdr-attention",
+    "valid": true,
+    "body": {
+      "schemaVersion": 2,
+      "source": "herdr",
+      "eventType": "attention_required",
+      "target": {
+        "sessionId": "opaque-session-id",
+        "paneId": "w1:p1"
+      },
+      "occurredAt": "2026-10-16T12:00:00Z"
+    }
+  },
+  {
+    "name": "herdr-correlated-progress",
+    "valid": true,
+    "body": {
+      "schemaVersion": 2,
+      "source": "herdr",
+      "eventType": "progress_updated",
+      "target": {
+        "sessionId": "opaque-session-id",
+        "paneId": "w1:p1",
+        "codexThreadId": "01999999-1111-7222-8333-444444444444"
+      },
+      "occurredAt": "2026-10-16T12:00:00Z"
+    }
+  },
+  {
+    "name": "herdr-targeted-test",
+    "valid": true,
+    "body": {
+      "schemaVersion": 2,
+      "source": "herdr",
+      "eventType": "test_notification",
+      "target": {
+        "sessionId": "opaque-session-id",
+        "testInstallationId": "opaque-installation-id"
+      },
+      "occurredAt": "2026-10-16T12:00:00Z"
+    }
+  },
+  {
+    "name": "herdr-fabricated-codex-target",
+    "valid": false,
+    "body": {
+      "schemaVersion": 2,
+      "source": "herdr",
+      "eventType": "attention_required",
+      "threadId": "fake-thread",
+      "turnId": "fake-turn",
+      "occurredAt": "2026-10-16T12:00:00Z"
+    }
+  },
+  {
+    "name": "herdr-missing-pane",
+    "valid": false,
+    "body": {
+      "schemaVersion": 2,
+      "source": "herdr",
+      "eventType": "progress_updated",
+      "target": {
+        "sessionId": "opaque-session-id"
+      },
+      "occurredAt": "2026-10-16T12:00:00Z"
+    }
+  },
+  {
+    "name": "herdr-private-content",
+    "valid": false,
+    "body": {
+      "schemaVersion": 2,
+      "source": "herdr",
+      "eventType": "attention_required",
+      "target": {
+        "sessionId": "opaque-session-id",
+        "paneId": "w1:p1"
+      },
+      "cwd": "PRIVATE_CONTENT",
+      "occurredAt": "2026-10-16T12:00:00Z"
+    }
+  },
+  {
+    "name": "herdr-test-without-recipient",
+    "valid": false,
+    "body": {
+      "schemaVersion": 2,
+      "source": "herdr",
+      "eventType": "test_notification",
+      "target": {
+        "sessionId": "opaque-session-id"
+      },
+      "occurredAt": "2026-10-16T12:00:00Z"
+    }
+  },
+  {
+    "name": "unknown-source",
+    "valid": false,
+    "body": {
+      "schemaVersion": 2,
+      "source": "other",
+      "eventType": "attention_required",
+      "target": {
+        "sessionId": "opaque-session-id",
+        "paneId": "w1:p1"
+      },
+      "occurredAt": "2026-10-16T12:00:00Z"
+    }
+  }
+]

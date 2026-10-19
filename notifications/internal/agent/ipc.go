@@ -15,6 +15,14 @@ import (
 const MaxIPCMessage = 16 * 1024
 
 func SendIPC(ctx context.Context, socketPath string, event protocol.HookEvent) error {
+	return sendHookIPC(ctx, socketPath, event)
+}
+
+func SendHerdrIPC(ctx context.Context, socketPath string, event protocol.HerdrDirtyEvent) error {
+	return sendHookIPC(ctx, socketPath, event)
+}
+
+func sendHookIPC(ctx context.Context, socketPath string, event any) error {
 	connection, err := dialIPC(ctx, socketPath)
 	if err != nil {
 		return err

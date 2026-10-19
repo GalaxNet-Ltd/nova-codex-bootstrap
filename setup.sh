@@ -17,9 +17,11 @@ TOKEN_FILE="${CONFIG_DIR}/novascale-app-server-token"
 HELPER_DIR="${HOME}/.local/bin"
 HELPER_PATH="${HELPER_DIR}/novascale-codex"
 AGENT_PATH="${HELPER_DIR}/novascale-agent"
-AGENT_CONFIG_DIR="${HOME}/.config/novascale-agent"
+AGENT_CONFIG_BASE="${XDG_CONFIG_HOME:-${HOME}/.config}"
+AGENT_STATE_BASE="${XDG_STATE_HOME:-${HOME}/.local/state}"
+AGENT_CONFIG_DIR="${AGENT_CONFIG_BASE}/novascale-agent"
 AGENT_CONFIG_FILE="${AGENT_CONFIG_DIR}/config.json"
-AGENT_STATE_DIR="${HOME}/.local/state/novascale-agent"
+AGENT_STATE_DIR="${AGENT_STATE_BASE}/novascale-agent"
 CODEX_HOOKS_FILE="${CONFIG_DIR}/hooks.json"
 LEGACY_SERVICE_LABEL="dev.galaxnet.novaaccess.codex"
 LEGACY_SERVICE_FILE="novaaccess-codex.service"
@@ -39,6 +41,8 @@ agent_previous_binary_version=""
 agent_previous_live_version=""
 agent_binary_changed=0
 agent_restart_required=0
+agent_binary_backup=""
+agent_upgrade_confirmed=0
 
 listen=""
 listen_set=0
@@ -57,6 +61,8 @@ notification_endpoint="$DEFAULT_NOTIFICATION_ENDPOINT"
 notification_endpoint_set=0
 no_hook_install=0
 notifications_only=0
+notification_source="codex"
+herdr_session=""
 wrapper_configuration_requested=0
 
 cleanup_agent_download() {
@@ -66,7 +72,32 @@ cleanup_agent_download() {
   rm -rf -- "$agent_download_dir"
 }
 
-trap cleanup_agent_download EXIT
+finish_agent_setup() {
+  setup_status=$?
+  if [ "$setup_status" -ne 0 ] && [ "$agent_upgrade_confirmed" -eq 0 ] && \
+     [ -n "$agent_binary_backup" ] && [ -f "$agent_binary_backup" ]; then
+    notice "Notification setup failed; restoring the previous notification-agent binary."
+    if cp "$agent_binary_backup" "${AGENT_PATH}.rollback" && chmod 755 "${AGENT_PATH}.rollback" && \
+       mv "${AGENT_PATH}.rollback" "$AGENT_PATH"; then
+      if [ "$no_start" -eq 0 ]; then
+        case "$(os_name)" in
+          Darwin)
+            rollback_plist="${HOME}/Library/LaunchAgents/${AGENT_SERVICE_LABEL}.plist"
+            if [ -f "$rollback_plist" ]; then
+              launchctl unload "$rollback_plist" >/dev/null 2>&1 || true
+              launchctl load "$rollback_plist" >/dev/null 2>&1 || true
+            fi
+            ;;
+          Linux) systemctl --user restart "$AGENT_SERVICE_FILE" >/dev/null 2>&1 || true ;;
+        esac
+      fi
+    fi
+  fi
+  cleanup_agent_download
+  exit "$setup_status"
+}
+
+trap finish_agent_setup EXIT
 trap 'exit 1' HUP INT TERM
 
 usage() {
@@ -100,6 +131,9 @@ Options:
   --agent-version <ver> Download this exact agent release instead of the
                         latest stable GitHub release.
   --no-hook-install     Install the agent without modifying Codex hooks.json.
+  --notification-source <codex|herdr>
+                        Select host integration (default: codex). Herdr requires
+                        --notifications-only and preserves all Codex hooks.
   --no-notifications    Skip notification-agent setup and leave any existing
                         notification-agent installation unchanged.
   --help                Show this help.
@@ -823,12 +857,40 @@ prepare_agent_upgrade() {
   agent_previous_live_version=""
   agent_binary_changed=0
   agent_restart_required=0
+  incoming_capabilities="$("$source_path" capabilities 2>/dev/null || true)"
+  if [ "$notification_source" = "herdr" ]; then
+    case "$incoming_capabilities" in
+      *'"herdr-host-capture-v1"'*) ;;
+      *) die "This notification-agent release does not support host-wide Herdr capture. Select a release with herdr-host-capture-v1 capability." ;;
+    esac
+  fi
 
   if [ -x "$AGENT_PATH" ]; then
+    installed_capabilities="$("$AGENT_PATH" capabilities 2>/dev/null || true)"
+    case "$installed_capabilities" in
+      *'"herdr-host-capture-v1"'*)
+        case "$incoming_capabilities" in
+          *'"herdr-host-capture-v1"'*) ;;
+          *) die "Refusing to remove installed host-wide Herdr notification support with an older agent." ;;
+        esac
+        ;;
+    esac
+    case "$installed_capabilities" in
+      *'"herdr-v2"'*)
+        case "$incoming_capabilities" in
+          *'"herdr-v2"'*) ;;
+          *) die "Refusing to remove installed Herdr notification support with an older agent." ;;
+        esac
+        ;;
+    esac
     agent_previous_binary_version="$("$AGENT_PATH" version 2>/dev/null || true)"
     agent_previous_live_version="$("$AGENT_PATH" daemon-version 2>/dev/null || true)"
     if [ "$source_path" != "$AGENT_PATH" ] && ! cmp -s "$source_path" "$AGENT_PATH"; then
       agent_binary_changed=1
+      ensure_agent_download_dir
+      agent_binary_backup="${agent_download_dir}/previous-agent"
+      cp "$AGENT_PATH" "$agent_binary_backup"
+      chmod 700 "$agent_binary_backup"
     fi
   fi
 
@@ -846,6 +908,14 @@ prepare_agent_upgrade() {
        [ "$agent_previous_binary_version" != "$agent_incoming_version" ]; then
     agent_restart_required=1
   fi
+  if [ "$notification_source" = "herdr" ] && [ -x "$AGENT_PATH" ] && \
+     [ -n "$agent_previous_live_version" ]; then
+    live_herdr_capabilities="$("$AGENT_PATH" herdr status --json 2>/dev/null || true)"
+    case "$live_herdr_capabilities" in
+      *'"herdr-host-capture-v1"'*) ;;
+      *) agent_restart_required=1 ;;
+    esac
+  fi
 }
 
 stage_notification_agent_enrollment() {
@@ -855,6 +925,9 @@ stage_notification_agent_enrollment() {
     if [ "$notification_endpoint_set" -eq 0 ]; then
       notification_endpoint="$current_notification_endpoint"
     elif [ "${current_notification_endpoint%/}" != "${notification_endpoint%/}" ]; then
+      if [ "$notification_source" = "herdr" ]; then
+        die "Existing notification backend differs; switch it explicitly before configuring Herdr."
+      fi
       notice "Existing notification backend differs from the requested backend; preserving it."
       notice "Run novascale-agent switch-backend explicitly before using a different notification backend."
       return 0
@@ -883,7 +956,19 @@ migrate_development_agent_hooks() {
   "$AGENT_PATH" hooks uninstall --agent-path "$source_path" --hooks-file "$CODEX_HOOKS_FILE" >/dev/null
 }
 
+agent_xml_value() {
+  printf '%s' "$1" | sed 's/\&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g'
+}
+
+agent_systemd_value() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/%/%%/g'
+}
+
 install_macos_agent_service() {
+  escaped_agent_config_base="$(agent_xml_value "$AGENT_CONFIG_BASE")"
+  escaped_agent_state_base="$(agent_xml_value "$AGENT_STATE_BASE")"
+  escaped_agent_path="$(agent_xml_value "$AGENT_PATH")"
+  escaped_agent_state_dir="$(agent_xml_value "$AGENT_STATE_DIR")"
   launch_dir="${HOME}/Library/LaunchAgents"
   plist="${launch_dir}/${AGENT_SERVICE_LABEL}.plist"
   mkdir -p "$launch_dir" "$AGENT_STATE_DIR"
@@ -898,7 +983,7 @@ install_macos_agent_service() {
     <string>${AGENT_SERVICE_LABEL}</string>
     <key>ProgramArguments</key>
     <array>
-      <string>${AGENT_PATH}</string>
+      <string>${escaped_agent_path}</string>
       <string>serve</string>
     </array>
     <key>RunAtLoad</key>
@@ -907,10 +992,17 @@ install_macos_agent_service() {
     <true/>
     <key>ProcessType</key>
     <string>Background</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>XDG_CONFIG_HOME</key>
+      <string>${escaped_agent_config_base}</string>
+      <key>XDG_STATE_HOME</key>
+      <string>${escaped_agent_state_base}</string>
+    </dict>
     <key>StandardOutPath</key>
-    <string>${AGENT_STATE_DIR}/agent.log</string>
+    <string>${escaped_agent_state_dir}/agent.log</string>
     <key>StandardErrorPath</key>
-    <string>${AGENT_STATE_DIR}/agent.err.log</string>
+    <string>${escaped_agent_state_dir}/agent.err.log</string>
   </dict>
 </plist>
 EOF
@@ -931,7 +1023,10 @@ EOF
 }
 
 install_linux_agent_service() {
-  systemd_dir="${HOME}/.config/systemd/user"
+  escaped_agent_config_base="$(agent_systemd_value "$AGENT_CONFIG_BASE")"
+  escaped_agent_state_base="$(agent_systemd_value "$AGENT_STATE_BASE")"
+  escaped_agent_path="$(agent_systemd_value "$AGENT_PATH")"
+  systemd_dir="${AGENT_CONFIG_BASE}/systemd/user"
   service="${systemd_dir}/${AGENT_SERVICE_FILE}"
   mkdir -p "$systemd_dir" "$AGENT_STATE_DIR"
   chmod 700 "$AGENT_STATE_DIR"
@@ -942,7 +1037,9 @@ After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${AGENT_PATH} serve
+ExecStart="${escaped_agent_path}" serve
+Environment="XDG_CONFIG_HOME=${escaped_agent_config_base}"
+Environment="XDG_STATE_HOME=${escaped_agent_state_base}"
 Restart=on-failure
 RestartSec=3
 
@@ -988,9 +1085,23 @@ configure_notification_agent() {
   prepare_agent_upgrade "$source_path"
   install_agent_binary "$source_path"
   stage_notification_agent_enrollment
-  migrate_development_agent_hooks "$source_path"
-  install_agent_hooks
+  if [ "$notification_source" = "codex" ] && [ "$no_hook_install" -eq 0 ]; then
+    migrate_development_agent_hooks "$source_path"
+    install_agent_hooks
+  fi
   install_agent_service
+  if [ "$notification_source" = "herdr" ] && [ "$no_start" -eq 0 ]; then
+    herdr_daemon_attempt=0
+    while :; do
+      live_herdr_status="$("$AGENT_PATH" herdr status --json 2>/dev/null || true)"
+      case "$live_herdr_status" in *'"herdr-host-capture-v1"'*) break ;; esac
+      herdr_daemon_attempt=$((herdr_daemon_attempt + 1))
+      [ "$herdr_daemon_attempt" -lt 20 ] || die "The notification daemon did not become ready for Herdr."
+      sleep 0.2
+    done
+    "$AGENT_PATH" herdr install --json
+  fi
+  agent_upgrade_confirmed=1
   if [ "$no_start" -eq 1 ]; then
     notice "Notification enrollment is staged; it will begin when the agent daemon starts."
   elif [ "$("$AGENT_PATH" registration-state)" != "active" ]; then
@@ -1023,8 +1134,10 @@ CONFIG_FILE="${CONFIG_DIR}/novascale-codex-host.env"
 TOKEN_FILE_DEFAULT="${CONFIG_DIR}/novascale-app-server-token"
 HELPER_PATH="${HOME}/.local/bin/novascale-codex"
 AGENT_PATH="${HOME}/.local/bin/novascale-agent"
-AGENT_CONFIG_DIR="${HOME}/.config/novascale-agent"
-AGENT_STATE_DIR="${HOME}/.local/state/novascale-agent"
+AGENT_CONFIG_BASE="${XDG_CONFIG_HOME:-${HOME}/.config}"
+AGENT_STATE_BASE="${XDG_STATE_HOME:-${HOME}/.local/state}"
+AGENT_CONFIG_DIR="${AGENT_CONFIG_BASE}/novascale-agent"
+AGENT_STATE_DIR="${AGENT_STATE_BASE}/novascale-agent"
 CODEX_HOOKS_FILE="${HOME}/.codex/hooks.json"
 LEGACY_SERVICE_LABEL="dev.galaxnet.novaaccess.codex"
 LEGACY_SERVICE_FILE="novaaccess-codex.service"
@@ -1506,6 +1619,20 @@ while [ "$#" -gt 0 ]; do
       notification_setup_explicit=1
       shift
       ;;
+    --notification-source)
+      [ "$#" -ge 2 ] || die "--notification-source requires a value"
+      case "$2" in codex|herdr) notification_source="$2" ;; *) die "Unsupported notification source" ;; esac
+      notification_setup_explicit=1
+      shift 2
+      ;;
+    --herdr-session)
+      [ "$#" -ge 2 ] || die "--herdr-session requires a value"
+      # Compatibility for previously shipped app setup commands. The plugin
+      # and capture now cover the whole OS user; this no longer selects scope.
+      herdr_session="$2"
+      notification_setup_explicit=1
+      shift 2
+      ;;
     --enable-notifications)
       notification_requested=1
       notification_setup_explicit=1
@@ -1558,6 +1685,13 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+if [ "$notification_source" = "herdr" ]; then
+  [ "$notifications_only" -eq 1 ] || die "Herdr setup requires --notifications-only"
+  no_hook_install=1
+elif [ -n "$herdr_session" ]; then
+  die "--herdr-session requires --notification-source herdr"
+fi
 
 if [ "$notification_setup_explicit" -eq 1 ] && [ "$notification_disabled" -eq 1 ]; then
   die "--no-notifications cannot be combined with notification setup options"

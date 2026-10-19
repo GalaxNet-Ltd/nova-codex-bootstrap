@@ -3,9 +3,13 @@ package agent
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"os"
+	"sync"
 	"time"
+
+	"github.com/GalaxNet-Ltd/nova-codex-bootstrap/internal/protocol"
 
 	_ "modernc.org/sqlite"
 )
@@ -18,7 +22,9 @@ type QueuedEvent struct {
 }
 
 type Queue struct {
-	db *sql.DB
+	db         *sql.DB
+	nextMu     sync.Mutex
+	lastSource string
 }
 
 func OpenQueue(path string) (*Queue, error) {
@@ -35,6 +41,7 @@ func OpenQueue(path string) (*Queue, error) {
 		`PRAGMA busy_timeout = 5000`,
 		`PRAGMA journal_mode = WAL`,
 		`PRAGMA synchronous = NORMAL`,
+		`PRAGMA foreign_keys = ON`,
 		`CREATE TABLE IF NOT EXISTS pending_events (
             event_id TEXT PRIMARY KEY,
             body BLOB NOT NULL,
@@ -44,12 +51,47 @@ func OpenQueue(path string) (*Queue, error) {
             expires_at INTEGER NOT NULL
         )`,
 		`CREATE INDEX IF NOT EXISTS idx_pending_events_due ON pending_events(next_attempt_at)`,
+		`CREATE TABLE IF NOT EXISTS herdr_bindings (
+		 binding_key TEXT PRIMARY KEY, session_id TEXT NOT NULL UNIQUE, socket_path TEXT NOT NULL,
+		 incarnation TEXT NOT NULL, updated_at INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1
+		)`,
+		`CREATE TABLE IF NOT EXISTS herdr_panes (
+		 binding_key TEXT NOT NULL REFERENCES herdr_bindings(binding_key) ON DELETE CASCADE,
+		 pane_id TEXT NOT NULL, terminal_id TEXT NOT NULL, sequence INTEGER NOT NULL,
+		 status TEXT NOT NULL, observed_at INTEGER NOT NULL, PRIMARY KEY(binding_key, pane_id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS herdr_adapter (
+		 singleton INTEGER PRIMARY KEY CHECK(singleton = 1), enabled INTEGER NOT NULL
+		)`,
+		// Adopt the previous explicit installation without replacing any binding.
+		// A prior uninstall disabled every binding and therefore stays disabled.
+		`INSERT OR IGNORE INTO herdr_adapter(singleton, enabled)
+		 SELECT 1, EXISTS(SELECT 1 FROM herdr_bindings WHERE enabled = 1)`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
 			db.Close()
 			return nil, err
 		}
+	}
+	for _, column := range []struct{ name, definition string }{
+		{"source", "TEXT NOT NULL DEFAULT 'codex'"}, {"session_id", "TEXT NOT NULL DEFAULT ''"}, {"pane_id", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('pending_events') WHERE name = ?`, column.name).Scan(&count); err != nil {
+			db.Close()
+			return nil, err
+		}
+		if count == 0 {
+			if _, err := db.Exec(`ALTER TABLE pending_events ADD COLUMN ` + column.name + ` ` + column.definition); err != nil {
+				db.Close()
+				return nil, err
+			}
+		}
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_pending_events_source_session ON pending_events(source, session_id, created_at)`); err != nil {
+		db.Close()
+		return nil, err
 	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		db.Close()
@@ -61,30 +103,71 @@ func OpenQueue(path string) (*Queue, error) {
 func (q *Queue) Close() error { return q.db.Close() }
 
 func (q *Queue) Enqueue(ctx context.Context, eventID string, body []byte, now time.Time) error {
-	_, err := q.db.ExecContext(ctx, `
-        INSERT OR IGNORE INTO pending_events(event_id, body, next_attempt_at, created_at, expires_at)
-        VALUES (?, ?, ?, ?, ?)`, eventID, body, now.Unix(), now.Unix(), now.Add(7*24*time.Hour).Unix())
+	tx, err := q.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	_, _ = q.db.ExecContext(ctx, `DELETE FROM pending_events WHERE expires_at < ?`, now.Unix())
-	_, _ = q.db.ExecContext(ctx, `DELETE FROM pending_events WHERE event_id IN (
-        SELECT event_id FROM pending_events ORDER BY created_at DESC LIMIT -1 OFFSET 500
-    )`)
+	defer tx.Rollback()
+	if err := enqueueEvent(ctx, tx, eventID, body, now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+type queueExecer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func enqueueEvent(ctx context.Context, executor queueExecer, eventID string, body []byte, now time.Time) error {
+	source, session, pane := "codex", "", ""
+	expires := now.Add(7 * 24 * time.Hour)
+	var event protocol.HostEvent
+	if json.Unmarshal(body, &event) == nil && event.EventSource() == protocol.SourceHerdr && event.Valid() {
+		source, session, pane = "herdr", event.Target.SessionID, event.Target.PaneID
+		expires = event.OccurredAt.Add(30 * time.Minute)
+	}
+	_, err := executor.ExecContext(ctx, `INSERT OR IGNORE INTO pending_events(event_id, body, next_attempt_at, created_at, expires_at, source, session_id, pane_id)
+	 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, eventID, body, now.Unix(), now.Unix(), expires.Unix(), source, session, pane)
+	if err != nil {
+		return err
+	}
+	for _, item := range []struct {
+		query string
+		args  []any
+	}{
+		{`DELETE FROM pending_events WHERE expires_at <= ?`, []any{now.Unix()}},
+		{`DELETE FROM pending_events WHERE event_id IN (SELECT event_id FROM pending_events WHERE source = 'herdr' AND session_id = ? ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET 50)`, []any{session}},
+		{`DELETE FROM pending_events WHERE event_id IN (SELECT event_id FROM pending_events WHERE source = 'herdr' ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET 200)`, nil},
+		// A noisy Herdr session cannot evict the queued Codex lifecycle events.
+		{`DELETE FROM pending_events WHERE event_id IN (SELECT event_id FROM pending_events ORDER BY CASE source WHEN 'codex' THEN 0 ELSE 1 END, created_at DESC, rowid DESC LIMIT -1 OFFSET 500)`, nil},
+	} {
+		if _, err := executor.ExecContext(ctx, item.query, item.args...); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
 func (q *Queue) Next(ctx context.Context, now time.Time) (QueuedEvent, error) {
+	q.nextMu.Lock()
+	defer q.nextMu.Unlock()
+	if _, err := q.db.ExecContext(ctx, `DELETE FROM pending_events WHERE expires_at <= ?`, now.Unix()); err != nil {
+		return QueuedEvent{}, err
+	}
 	var event QueuedEvent
 	var next int64
+	var source string
 	err := q.db.QueryRowContext(ctx, `
-        SELECT event_id, body, attempts, next_attempt_at
-        FROM pending_events WHERE next_attempt_at <= ?
-        ORDER BY created_at LIMIT 1`, now.Unix()).Scan(&event.EventID, &event.Body, &event.Attempts, &next)
+        SELECT event_id, body, attempts, next_attempt_at, source
+        FROM pending_events WHERE next_attempt_at <= ? AND expires_at > ?
+        ORDER BY CASE WHEN source = ? THEN 1 ELSE 0 END, created_at, rowid LIMIT 1`, now.Unix(), now.Unix(), q.lastSource).Scan(&event.EventID, &event.Body, &event.Attempts, &next, &source)
 	if errors.Is(err, sql.ErrNoRows) {
 		return QueuedEvent{}, sql.ErrNoRows
 	}
 	event.NextAttempt = time.Unix(next, 0)
+	if err == nil {
+		q.lastSource = source
+	}
 	return event, err
 }
 

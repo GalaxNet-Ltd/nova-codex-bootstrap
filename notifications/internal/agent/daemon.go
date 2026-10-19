@@ -12,6 +12,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,6 +34,7 @@ type Daemon struct {
 	Client               *http.Client
 	now                  func() time.Time
 	wake                 chan struct{}
+	herdrDirty           chan protocol.HerdrDirtyEvent
 	configMu             sync.RWMutex
 	enrollmentPoll       time.Duration
 	enrollmentMin        time.Duration
@@ -41,6 +43,7 @@ type Daemon struct {
 
 func (d *Daemon) Run(ctx context.Context) error {
 	d.setDefaults()
+	d.herdrDirty = make(chan protocol.HerdrDirtyEvent, 128)
 	listener, err := ListenIPC(d.SocketPath)
 	if err != nil {
 		return err
@@ -48,7 +51,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	defer listener.Close()
 
 	var workers sync.WaitGroup
-	workers.Add(2)
+	workers.Add(3)
 	go func() {
 		defer workers.Done()
 		d.uploadLoop(ctx)
@@ -57,6 +60,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		defer workers.Done()
 		d.enrollmentLoop(ctx)
 	}()
+	go func() { defer workers.Done(); d.herdrLoop(ctx) }()
 	defer workers.Wait()
 
 	go func() {
@@ -64,6 +68,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		listener.Close()
 	}()
 
+	connections := make(chan struct{}, 64)
 	for {
 		connection, err := listener.Accept()
 		if err != nil {
@@ -72,7 +77,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 			}
 			return err
 		}
-		go d.handleConnection(ctx, connection)
+		select {
+		case connections <- struct{}{}:
+			go func() { defer func() { <-connections }(); d.handleConnection(ctx, connection) }()
+		default:
+			connection.Close()
+		}
 	}
 }
 
@@ -98,9 +108,32 @@ func (d *Daemon) handleConnection(ctx context.Context, connection net.Conn) {
 		}
 		_ = json.NewEncoder(connection).Encode(protocol.DaemonInfoResponse{
 			Version:           d.Version,
+			Capabilities:      []string{"codex-v1", HerdrCapability, HerdrBindingsCapability, HerdrHostCaptureCapability, InstallationPairingCapability},
 			QueueDepth:        depth,
 			RegistrationState: d.configSnapshot().RegistrationState,
 		})
+		return
+	}
+	var dirty protocol.HerdrDirtyEvent
+	if json.Unmarshal(raw, &dirty) == nil && dirty.Type == protocol.HerdrDirtyEventType {
+		if len(dirty.BindingKey) != 64 || (!protocol.ValidID(dirty.PaneID) && !(dirty.Baseline && dirty.PaneID == "")) {
+			_ = json.NewEncoder(connection).Encode(protocol.IPCResponse{Error: "invalid Herdr signal"})
+			return
+		}
+		if _, err := hex.DecodeString(dirty.BindingKey); err != nil {
+			_ = json.NewEncoder(connection).Encode(protocol.IPCResponse{Error: "invalid Herdr binding"})
+			return
+		}
+		if dirty.SocketPath != "" && (len(dirty.SocketPath) > 4096 || !filepath.IsAbs(dirty.SocketPath) || strings.ContainsAny(dirty.SocketPath, "\x00\r\n") || HerdrBindingKey(dirty.SocketPath) != dirty.BindingKey) {
+			_ = json.NewEncoder(connection).Encode(protocol.IPCResponse{Error: "invalid Herdr socket"})
+			return
+		}
+		select {
+		case d.herdrDirty <- dirty:
+			_ = json.NewEncoder(connection).Encode(protocol.IPCResponse{Accepted: true})
+		default:
+			_ = json.NewEncoder(connection).Encode(protocol.IPCResponse{Error: "Herdr signal queue full"})
+		}
 		return
 	}
 	var event protocol.HookEvent
@@ -143,7 +176,8 @@ func (d *Daemon) handleConnection(ctx context.Context, connection net.Conn) {
 }
 
 func validateHookEvent(event protocol.HookEvent) error {
-	if event.ProtocolVersion != protocol.Version || !event.EventType.Valid() || event.ThreadID == "" || event.TurnID == "" || event.OccurredAt.IsZero() {
+	hostEvent := protocol.HostEvent{SchemaVersion: event.ProtocolVersion, EventType: event.EventType, ThreadID: event.ThreadID, TurnID: event.TurnID, RequestID: event.RequestID, OccurredAt: event.OccurredAt}
+	if event.ProtocolVersion != protocol.Version || !hostEvent.Valid() {
 		return errors.New("invalid hook event")
 	}
 	return nil
@@ -199,6 +233,10 @@ func (d *Daemon) upload(ctx context.Context, event QueuedEvent) error {
 		return err
 	}
 	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/v1/host-events"
+	var hostEvent protocol.HostEvent
+	if json.Unmarshal(event.Body, &hostEvent) == nil && hostEvent.EventSource() == protocol.SourceHerdr {
+		endpoint.Path = strings.TrimSuffix(endpoint.Path, "/v1/host-events") + "/v2/host-events"
+	}
 	timestamp := d.now().Unix()
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), strings.NewReader(string(event.Body)))
 	if err != nil {
@@ -215,6 +253,26 @@ func (d *Daemon) upload(ctx context.Context, event QueuedEvent) error {
 	}
 	defer response.Body.Close()
 	if (response.StatusCode >= 200 && response.StatusCode < 300) || response.StatusCode == http.StatusConflict {
+		return nil
+	}
+	if response.StatusCode == http.StatusBadRequest && hostEvent.HerdrMetadata != nil {
+		// Older v2 backends reject unknown fields. Retry the same event identity
+		// once without optional presentation metadata, with a fresh signature.
+		hostEvent.HerdrMetadata = nil
+		body, err := json.Marshal(hostEvent)
+		if err != nil {
+			return err
+		}
+		event.Body = body
+		response.Body.Close()
+		return d.upload(ctx, event)
+	}
+	if hostEvent.EventSource() == protocol.SourceHerdr && (response.StatusCode == http.StatusBadRequest || response.StatusCode == http.StatusUnprocessableEntity || response.StatusCode == http.StatusNotFound) {
+		// Permanent schema/freshness/capability rejection must not occupy the
+		// shared queue indefinitely. Codex's existing retry behavior is retained.
+		return nil
+	}
+	if hostEvent.EventType == protocol.EventTestNotification && response.StatusCode == http.StatusTooManyRequests {
 		return nil
 	}
 	return errors.New("event upload rejected: " + response.Status)

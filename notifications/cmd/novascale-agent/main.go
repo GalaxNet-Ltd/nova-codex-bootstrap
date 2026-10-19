@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -30,9 +31,19 @@ func main() {
 		runHook(os.Args[2:])
 		return
 	}
+	if os.Args[1] == "herdr-hook" {
+		runHerdrHook(os.Args[2:])
+		return
+	}
 
 	var err error
 	switch os.Args[1] {
+	case "authorize-installation":
+		err = runInstallationPairing(os.Args[2:])
+	case "herdr":
+		err = runHerdr(os.Args[2:])
+	case "capabilities":
+		err = json.NewEncoder(os.Stdout).Encode(map[string]any{"version": version, "capabilities": []string{"codex-v1", agent.HerdrCapability, agent.HerdrBindingsCapability, agent.HerdrHostCaptureCapability, agent.InstallationPairingCapability}})
 	case "init":
 		err = runInit(os.Args[2:])
 	case "switch-backend":
@@ -213,7 +224,7 @@ func runHook(arguments []string) {
 	if flags.Parse(arguments) != nil {
 		return
 	}
-	event, err := agent.NormalizeHook(os.Stdin, time.Now())
+	event, err := agent.NormalizeHook(os.Stdin, agent.ClockNow())
 	if err != nil {
 		return
 	}
@@ -512,5 +523,5 @@ func runEndpoint(arguments []string) error {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: novascale-agent <init|switch-backend|serve|hook|status|registration-state|host-id|endpoint|daemon-version|hooks|app-server|version>")
+	fmt.Fprintln(os.Stderr, "usage: novascale-agent <init|switch-backend|serve|hook|herdr-hook|herdr|authorize-installation|capabilities|status|registration-state|host-id|endpoint|daemon-version|hooks|app-server|version>")
 }
