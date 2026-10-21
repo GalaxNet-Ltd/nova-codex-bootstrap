@@ -108,11 +108,20 @@ func (q *Queue) ReconcileHerdr(ctx context.Context, binding HerdrBinding, agents
 		newPane := errors.Is(err, sql.ErrNoRows)
 		initial := newPane || terminal != agent.TerminalID || agent.Sequence < sequence
 		typeToSend := protocol.EventType("")
-		if !baseline && agent.Agent != "" {
-			if agent.Status == "blocked" && ((newPane && previousIncarnation != "") || (!initial && agent.Sequence > sequence && status != "blocked")) {
+		// The first observation of every pane/terminal is a silent baseline,
+		// including a real approval first discovered already blocked. Later
+		// transitions notify without requiring an observed working state.
+		if !baseline && !initial && agent.Agent != "" && agent.Sequence > sequence {
+			if agent.Status == "blocked" && status != "blocked" {
 				typeToSend = protocol.EventAttentionRequired
 			}
-			if !initial && agent.Sequence > sequence && status == "working" && (agent.Status == "idle" || agent.Status == "done") {
+			completed := status == "working"
+			if agent.CompletionSupported {
+				// Absence on a capable server explicitly means no completed work.
+				// Positive evidence also covers working states coalesced between reads.
+				completed = agent.CompletionSequence != nil && *agent.CompletionSequence == agent.Sequence
+			}
+			if completed && (agent.Status == "idle" || agent.Status == "done") {
 				typeToSend = protocol.EventProgressUpdated
 			}
 		}

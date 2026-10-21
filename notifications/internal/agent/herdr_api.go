@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,16 +26,18 @@ const HerdrCapability = "herdr-v2"
 // Decode the documented status-event presentation fields from current typed
 // state. Paths, tokens, terminal titles, screen content and commands stay local.
 type HerdrAgent struct {
-	TerminalID   string            `json:"terminal_id"`
-	PaneID       string            `json:"pane_id"`
-	Agent        string            `json:"agent"`
-	Status       string            `json:"agent_status"`
-	Sequence     uint64            `json:"state_change_seq"`
-	WorkspaceID  string            `json:"workspace_id"`
-	Title        string            `json:"title"`
-	DisplayAgent string            `json:"display_agent"`
-	StateLabels  map[string]string `json:"state_labels"`
-	AgentSession *struct {
+	TerminalID          string            `json:"terminal_id"`
+	PaneID              string            `json:"pane_id"`
+	Agent               string            `json:"agent"`
+	Status              string            `json:"agent_status"`
+	Sequence            uint64            `json:"state_change_seq"`
+	CompletionSequence  *uint64           `json:"completion_seq"`
+	CompletionSupported bool              `json:"-"`
+	WorkspaceID         string            `json:"workspace_id"`
+	Title               string            `json:"title"`
+	DisplayAgent        string            `json:"display_agent"`
+	StateLabels         map[string]string `json:"state_labels"`
+	AgentSession        *struct {
 		Agent string `json:"agent"`
 		Kind  string `json:"kind"`
 		Value string `json:"value"`
@@ -140,7 +143,37 @@ func herdrRequest(ctx context.Context, socketPath, method string, params any, re
 	return nil
 }
 
+// The JSON API has no completion-evidence capability flag. Use its typed ping
+// version (the running server, never the installed executable) for the feature
+// introduced in stable 0.9.2. Unknown/pre-release versions keep legacy behavior.
+func herdrSupportsCompletionEvidence(version string) bool {
+	version, _, _ = strings.Cut(version, "+")
+	parts := strings.Split(version, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	var numbers [3]uint64
+	for i, part := range parts {
+		if part == "" {
+			return false
+		}
+		for _, ch := range part {
+			if ch < '0' || ch > '9' {
+				return false
+			}
+		}
+		value, err := strconv.ParseUint(part, 10, 32)
+		if err != nil {
+			return false
+		}
+		numbers[i] = value
+	}
+	return numbers[0] > 0 || numbers[1] > 9 || (numbers[1] == 9 && numbers[2] >= 2)
+}
+
 func ReadHerdrAgents(ctx context.Context, socketPath string) ([]HerdrAgent, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
 	info, err := os.Lstat(socketPath)
 	if err != nil || info.Mode()&os.ModeSocket == 0 {
 		return nil, "", errors.New("Herdr socket unavailable")
@@ -154,15 +187,32 @@ func ReadHerdrAgents(ctx context.Context, socketPath string) ([]HerdrAgent, stri
 	var reply struct {
 		Agents []HerdrAgent `json:"agents"`
 	}
+	var status struct {
+		Version string `json:"version"`
+	}
+	if err := herdrRequest(ctx, socketPath, "ping", map[string]any{}, &status); err != nil {
+		return nil, "", err
+	}
 	if err := herdrRequest(ctx, socketPath, "agent.list", map[string]any{}, &reply); err != nil {
 		return nil, "", err
+	}
+	// Herdr closes ordinary API connections after one request. Reject a socket
+	// replacement between the typed version and state reads.
+	current, err := os.Lstat(socketPath)
+	if err != nil || !os.SameFile(info, current) || !info.ModTime().Equal(current.ModTime()) {
+		return nil, "", errors.New("Herdr socket unavailable")
 	}
 	if len(reply.Agents) > 512 {
 		return nil, "", errors.New("Herdr agent metadata exceeds limit")
 	}
-	for _, agent := range reply.Agents {
+	for index := range reply.Agents {
+		agent := &reply.Agents[index]
+		agent.CompletionSupported = herdrSupportsCompletionEvidence(status.Version)
 		if !protocol.ValidID(agent.PaneID) || !protocol.ValidID(agent.TerminalID) || !validHerdrStatus(agent.Status) || agent.Sequence > 1<<63-1 {
 			return nil, "", errors.New("invalid Herdr agent metadata")
+		}
+		if agent.CompletionSequence != nil && *agent.CompletionSequence > agent.Sequence {
+			return nil, "", errors.New("invalid Herdr completion sequence")
 		}
 	}
 	return reply.Agents, incarnation, nil

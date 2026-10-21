@@ -77,12 +77,17 @@ def main():
                     time.sleep(0.2)
                     agent = request(path, "agent.get", {"target": pane})["agent"]
                     assert agent["terminal_id"] and agent["pane_id"] == pane
+                    if state == "idle":
+                        assert agent.get("completion_seq") == agent["state_change_seq"]
+                    else:
+                        assert agent.get("completion_seq") is None
                     sequences.append(agent["state_change_seq"])
                 before = request(path, "agent.get", {"target": pane})["agent"]
                 request(path, "pane.report_metadata", {"pane_id": pane, "source": "novascale-test", "title": "Private test title", "seq": 100})
                 time.sleep(0.2)
                 after = request(path, "agent.get", {"target": pane})["agent"]
                 assert before["state_change_seq"] == after["state_change_seq"]
+                assert before["completion_seq"] == after["completion_seq"]
             deadline = time.monotonic() + 3
             while not capture.exists() and time.monotonic() < deadline:
                 time.sleep(0.05)

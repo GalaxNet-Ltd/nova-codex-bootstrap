@@ -139,6 +139,15 @@ not required. Install the integration once for the OS user, even before any
 Herdr session is running. Capture covers existing and future sessions; the
 backend applies each phone's exact watches or selected-host consent.
 
+For stable Herdr 0.9.2 and later, capture uses `agent.list` completion evidence
+to detect short work that finishes between observations. The running server's
+typed `ping` version determines support, independently of the installed binary.
+An omitted `completion_seq` on these servers suppresses a progress notification;
+0.9.1 retains the observed working-to-idle/done fallback. First installation,
+restart and pane replacement establish baselines without replaying old work.
+Completion evidence stays local; signed events and backend consent/quota rules
+are unchanged.
+
 ```sh
 novascale-agent herdr status --json
 novascale-agent herdr install --json
@@ -178,11 +187,17 @@ already running servers. Automatic binding validates the same-user Unix socket
 and typed state. Persisted adapter consent prevents late hooks from reenabling
 capture after uninstall. Existing opaque binding IDs survive upgrade/reinstall.
 The hook never approves, denies or changes a Herdr or
-agent action. The daemon reads only typed `agent.list` metadata and reconciles
+agent action. The daemon reads typed `agent.list` metadata and reconciles
 terminal identity and state sequence, so callback ordering, repeated callbacks,
 renames and seen/focus changes cannot create repeated completion hints.
 
-Entering `blocked` produces an attention hint once per observed episode.
+The first observation of each pane/terminal is a silent baseline for every
+agent, including one first discovered already blocked. This also silences a real
+approval if it is the first observed state. Later transitions into `blocked`
+produce an attention hint once per observed episode; prior observed working is
+not required. An agent first seen working can notify on its first later approval.
+The existing durable pane ledger preserves observations across reconnects and
+restarts. No agent-specific startup rules, screen reads or quiet timer are used.
 Observed `working` returning to `idle`/`done` produces a progress hint; it does
 not prove task success. Cold start, reconnect and socket replacement establish
 a baseline and do not replay historical state. A local socket inode/mtime plus
@@ -195,8 +210,12 @@ Herdr outgoing events use schema 2 with `source: "herdr"`, semantic event type,
 timestamp and `target.sessionId` / `paneId`. The session ID is a durable random
 binding, not the remote session name/path. A typed Codex agent session with
 `kind: "id"` and a validated UUID may add `codexThreadId`; paths and agent labels
-never become routing IDs. Targeted test hints use only session and installation
-IDs. Existing Codex event bodies and signing remain schema 1.
+never become routing IDs. Preserve this correlation even though the Herdr
+baseline policy is agent-independent: matching Codex coverage takes precedence
+per phone before quota is charged, while phones without matching Codex coverage
+can still receive Herdr. Independent Codex hooks, event bodies and schema-1
+signing are unchanged; Herdr's first observation does not suppress a Codex hook.
+Targeted test hints use only session and installation IDs.
 
 Attention/progress hints also carry optional `herdrMetadata`, limited to the
 remaining documented `pane.agent_status_changed` fields: `workspaceId`,
