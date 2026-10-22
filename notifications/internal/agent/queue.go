@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,6 +43,7 @@ func OpenQueue(path string) (*Queue, error) {
 		`PRAGMA journal_mode = WAL`,
 		`PRAGMA synchronous = NORMAL`,
 		`PRAGMA foreign_keys = ON`,
+		`CREATE TABLE IF NOT EXISTS queue_backend(singleton INTEGER PRIMARY KEY CHECK(singleton = 1), endpoint TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS pending_events (
             event_id TEXT PRIMARY KEY,
             body BLOB NOT NULL,
@@ -75,7 +77,7 @@ func OpenQueue(path string) (*Queue, error) {
 		}
 	}
 	for _, column := range []struct{ name, definition string }{
-		{"source", "TEXT NOT NULL DEFAULT 'codex'"}, {"session_id", "TEXT NOT NULL DEFAULT ''"}, {"pane_id", "TEXT NOT NULL DEFAULT ''"},
+		{"backend", "TEXT NOT NULL DEFAULT ''"}, {"source", "TEXT NOT NULL DEFAULT 'codex'"}, {"session_id", "TEXT NOT NULL DEFAULT ''"}, {"pane_id", "TEXT NOT NULL DEFAULT ''"},
 	} {
 		var count int
 		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('pending_events') WHERE name = ?`, column.name).Scan(&count); err != nil {
@@ -126,8 +128,8 @@ func enqueueEvent(ctx context.Context, executor queueExecer, eventID string, bod
 		source, session, pane = "herdr", event.Target.SessionID, event.Target.PaneID
 		expires = event.OccurredAt.Add(30 * time.Minute)
 	}
-	_, err := executor.ExecContext(ctx, `INSERT OR IGNORE INTO pending_events(event_id, body, next_attempt_at, created_at, expires_at, source, session_id, pane_id)
-	 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, eventID, body, now.Unix(), now.Unix(), expires.Unix(), source, session, pane)
+	_, err := executor.ExecContext(ctx, `INSERT OR IGNORE INTO pending_events(event_id, body, next_attempt_at, created_at, expires_at, source, session_id, pane_id, backend)
+	 VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT endpoint FROM queue_backend WHERE singleton = 1), ''))`, eventID, body, now.Unix(), now.Unix(), expires.Unix(), source, session, pane)
 	if err != nil {
 		return err
 	}
@@ -148,7 +150,37 @@ func enqueueEvent(ctx context.Context, executor queueExecer, eventID string, bod
 	return nil
 }
 
+// ConfigureBackend assigns legacy events once and makes new events belong to
+// the currently active endpoint. Previously assigned events never move.
+func (q *Queue) ConfigureBackend(ctx context.Context, endpoint string) error {
+	normalized, err := parseNotificationEndpoint(endpoint)
+	if err != nil {
+		return err
+	}
+	endpoint = strings.TrimRight(normalized.String(), "/")
+	tx, err := q.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE pending_events SET backend = COALESCE((SELECT endpoint FROM queue_backend WHERE singleton = 1), ?) WHERE backend = ''`, endpoint); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO queue_backend(singleton, endpoint) VALUES(1, ?) ON CONFLICT(singleton) DO UPDATE SET endpoint = excluded.endpoint`, endpoint); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (q *Queue) Next(ctx context.Context, now time.Time) (QueuedEvent, error) {
+	return q.next(ctx, now, "")
+}
+
+func (q *Queue) NextForBackend(ctx context.Context, now time.Time, backend string) (QueuedEvent, error) {
+	return q.next(ctx, now, strings.TrimRight(backend, "/"))
+}
+
+func (q *Queue) next(ctx context.Context, now time.Time, backend string) (QueuedEvent, error) {
 	q.nextMu.Lock()
 	defer q.nextMu.Unlock()
 	if _, err := q.db.ExecContext(ctx, `DELETE FROM pending_events WHERE expires_at <= ?`, now.Unix()); err != nil {
@@ -159,8 +191,8 @@ func (q *Queue) Next(ctx context.Context, now time.Time) (QueuedEvent, error) {
 	var source string
 	err := q.db.QueryRowContext(ctx, `
         SELECT event_id, body, attempts, next_attempt_at, source
-        FROM pending_events WHERE next_attempt_at <= ? AND expires_at > ?
-        ORDER BY CASE WHEN source = ? THEN 1 ELSE 0 END, created_at, rowid LIMIT 1`, now.Unix(), now.Unix(), q.lastSource).Scan(&event.EventID, &event.Body, &event.Attempts, &next, &source)
+        FROM pending_events WHERE next_attempt_at <= ? AND expires_at > ? AND (? = '' OR backend = ?)
+        ORDER BY CASE WHEN source = ? THEN 1 ELSE 0 END, created_at, rowid LIMIT 1`, now.Unix(), now.Unix(), backend, backend, q.lastSource).Scan(&event.EventID, &event.Body, &event.Attempts, &next, &source)
 	if errors.Is(err, sql.ErrNoRows) {
 		return QueuedEvent{}, sql.ErrNoRows
 	}
@@ -185,4 +217,14 @@ func (q *Queue) Depth(ctx context.Context) (int, error) {
 	var count int
 	err := q.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pending_events`).Scan(&count)
 	return count, err
+}
+
+// ClearNotificationCapture removes unsent events and disables Herdr capture
+// while preserving opaque session bindings for a later reinstall.
+func (q *Queue) ClearNotificationCapture(ctx context.Context) error {
+	if err := q.SetHerdrCaptureEnabled(ctx, false); err != nil {
+		return err
+	}
+	_, err := q.db.ExecContext(ctx, `DELETE FROM pending_events`)
+	return err
 }

@@ -62,12 +62,61 @@ func TestDaemonQueueSignsAndUploadsEvent(t *testing.T) {
 	if err := queue.Enqueue(context.Background(), "event-1", body, time.Now()); err != nil {
 		t.Fatal(err)
 	}
+	if err := queue.ConfigureBackend(context.Background(), daemon.Config.Endpoint); err != nil {
+		t.Fatal(err)
+	}
 	daemon.uploadDue(context.Background())
 	select {
 	case <-uploaded:
 	case <-time.After(time.Second):
 		depth, _ := queue.Depth(context.Background())
 		t.Fatalf("event was not uploaded; queue depth=%d", depth)
+	}
+}
+
+func TestDaemonBackendSwitchUploadsOnlyEventsForTheirOriginalDestination(t *testing.T) {
+	ctx := context.Background()
+	queue, err := OpenQueue(filepath.Join(t.TempDir(), "agent.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer queue.Close()
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	var deliveries []string
+	daemon := &Daemon{Queue: queue, PrivateKey: key, now: func() time.Time { return now }}
+	daemon.Client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		deliveries = append(deliveries, r.URL.Host+"/"+r.Header.Get("X-NovaScale-Event-ID"))
+		return testResponse(http.StatusAccepted, "202 Accepted"), nil
+	})}
+	activate := func(endpoint string) {
+		t.Helper()
+		if err := queue.ConfigureBackend(ctx, endpoint); err != nil {
+			t.Fatal(err)
+		}
+		daemon.Config = Config{HostID: "same-host", Endpoint: endpoint, RegistrationState: RegistrationActive}
+	}
+	enqueue := func(id string) {
+		t.Helper()
+		if err := queue.Enqueue(ctx, id, []byte(`{"schemaVersion":1}`), now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	activate("https://production.test")
+	enqueue("production-event")
+	activate("https://staging.test")
+	enqueue("staging-event")
+	daemon.uploadDue(ctx)
+	if len(deliveries) != 1 || deliveries[0] != "staging.test/staging-event" {
+		t.Fatalf("unexpected staging uploads: %v", deliveries)
+	}
+	activate("https://production.test")
+	daemon.uploadDue(ctx)
+	if len(deliveries) != 2 || deliveries[1] != "production.test/production-event" {
+		t.Fatalf("unexpected production uploads: %v", deliveries)
 	}
 }
 

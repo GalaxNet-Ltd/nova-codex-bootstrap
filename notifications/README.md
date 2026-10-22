@@ -108,14 +108,15 @@ after daemon startup so the backend learns the running agent version; this
 preserves the existing host ID and private key. Normal redeploys preserve active
 and pending host identities.
 
-`switch-backend` preserves the existing host ID, Ed25519 private key, queued
-events, Codex App Server capability token, and wrapper configuration. It
-changes only the notification endpoint and registration state, and lets the
-running daemon perform autonomous signed registration with normal retry
-behavior. It is a no-op when an
-active agent already uses the requested endpoint. Use `--force` only to
-re-enroll after the same backend has lost or intentionally removed its host
-registration.
+Use `novascale-agent switch-backend production` or `novascale-agent switch-backend staging` for the bundled service endpoints. `--endpoint URL` remains available for an explicit custom endpoint; do not combine it with a preset. Put flags before the preset, for example `switch-backend --force staging`.
+
+Switching preserves the host ID, Ed25519 private key, session identities and wrapper configuration. It changes the endpoint and registration state; the daemon reenrolls asynchronously with retry. Events remain bound to the backend where they were captured and are uploaded only when that backend is active again, subject to normal queue expiry/limits. Existing untagged events bind to the old endpoint before the switch. `--force` reenrolls after the same backend has lost its registration.
+
+Before downgrading to an agent that predates backend-bound queues, run the current agent’s `uninstall` to clear pending events while retaining identity, then install the old version. An old binary cannot honor queue destinations; do not let it open a mixed-backend queue.
+
+Only switch between trusted services. The signing format does not include a backend audience: retaining the same key on two services does not provide cryptographic isolation between them. Phone preferences/credentials must be set separately for each service.
+
+`novascale-agent uninstall --dry-run` previews removal. `uninstall` stops and removes the notification service, its exact Codex hook commands, Herdr plugin and executable, and clears pending events/capture. By default it keeps the host ID, signing key, configuration and opaque session identities for reinstall. Add `--purge` to remove those too. Use `--hooks-file PATH` for a non-default Codex hooks file. Unrelated hooks and the Codex App Server wrapper remain untouched; backend records are not deleted. If a manually started agent is still running, stop it before uninstalling. Plugin removal failure stops cleanup before deleting the executable; resolve it and retry.
 
 Bootstrap preserves the configured backend on every ordinary rerun. If an
 explicitly requested endpoint differs, setup leaves the existing identity and
@@ -280,18 +281,10 @@ Session names stay on the host and the authenticated SSH client. They are not
 added to hook IPC, signed host events, or push payloads. The same notification
 agent still serves both Codex and Herdr, independently of recipient scope.
 
-### Authorizing a phone for an existing agent
+### Phone association and host identity
 
-`novascale-agent authorize-installation --installation <phone-installation-id>
---source codex` (or `herdr`) emits a short-lived signed proof for that phone and
-source. NovaScale requests it automatically over its configured SSH transport
-when notifications first need a host association. The proof contains only the
-agent host ID, phone installation ID, source, random nonce and timestamp. It
-contains no prompts, paths, session content or private key. The signing key and
-existing host identity are unchanged; the phone's own credential is never sent
-to the agent. The capability is `installation-pairing-v1`.
+The phone associates the registered host ID, its own installation and a source directly with the notification service. There is no host authorization CLI, phone pairing proof or required SSH round trip for notification settings. SSH remains useful for explicit agent installation/update and support inspection.
 
-Upgrades reuse the existing notification agent for Codex and Herdr. A separate
-installation under another OS account has its own notification identity. The
-agent still uploads supported, minimized signed events; phone preferences,
-selected-host filtering and quota decisions are applied by the service.
+Host IDs are random UUID v4 values persisted with their signing key. Knowing a registered ID and owning a valid phone installation is sufficient to request coverage; do not publish IDs as a host directory. Association alone does not enable delivery. The service still applies each phone's source preference, exact watches or selected hosts, presence and quota. Host events remain signed and verified.
+
+Upgrades reuse the same notification identity for Codex and Herdr. Another OS account's separate installation has its own identity. Upgrading the app and service must be coordinated: older apps that require the removed proof endpoint and older services that enforce it are not compatible with the new association flow.

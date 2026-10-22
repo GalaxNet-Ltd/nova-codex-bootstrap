@@ -43,6 +43,9 @@ type Daemon struct {
 
 func (d *Daemon) Run(ctx context.Context) error {
 	d.setDefaults()
+	if err := d.Queue.ConfigureBackend(ctx, d.configSnapshot().Endpoint); err != nil {
+		return err
+	}
 	d.herdrDirty = make(chan protocol.HerdrDirtyEvent, 128)
 	listener, err := ListenIPC(d.SocketPath)
 	if err != nil {
@@ -108,7 +111,7 @@ func (d *Daemon) handleConnection(ctx context.Context, connection net.Conn) {
 		}
 		_ = json.NewEncoder(connection).Encode(protocol.DaemonInfoResponse{
 			Version:           d.Version,
-			Capabilities:      []string{"codex-v1", HerdrCapability, HerdrBindingsCapability, HerdrHostCaptureCapability, InstallationPairingCapability},
+			Capabilities:      []string{"codex-v1", HerdrCapability, HerdrBindingsCapability, HerdrHostCaptureCapability},
 			QueueDepth:        depth,
 			RegistrationState: d.configSnapshot().RegistrationState,
 		})
@@ -208,14 +211,15 @@ func (d *Daemon) uploadLoop(ctx context.Context) {
 
 func (d *Daemon) uploadDue(ctx context.Context) {
 	for ctx.Err() == nil {
-		if d.configSnapshot().RegistrationState != RegistrationActive {
+		config := d.configSnapshot()
+		if config.RegistrationState != RegistrationActive {
 			return
 		}
-		event, err := d.Queue.Next(ctx, d.now())
+		event, err := d.Queue.NextForBackend(ctx, d.now(), config.Endpoint)
 		if errors.Is(err, sql.ErrNoRows) || err != nil {
 			return
 		}
-		if err := d.upload(ctx, event); err == nil {
+		if err := d.uploadToBackend(ctx, event, config); err == nil {
 			_ = d.Queue.Complete(ctx, event.EventID)
 			continue
 		}
@@ -227,7 +231,10 @@ func (d *Daemon) uploadDue(ctx context.Context) {
 }
 
 func (d *Daemon) upload(ctx context.Context, event QueuedEvent) error {
-	config := d.configSnapshot()
+	return d.uploadToBackend(ctx, event, d.configSnapshot())
+}
+
+func (d *Daemon) uploadToBackend(ctx context.Context, event QueuedEvent, config Config) error {
 	endpoint, err := parseNotificationEndpoint(config.Endpoint)
 	if err != nil {
 		return err
@@ -265,7 +272,7 @@ func (d *Daemon) upload(ctx context.Context, event QueuedEvent) error {
 		}
 		event.Body = body
 		response.Body.Close()
-		return d.upload(ctx, event)
+		return d.uploadToBackend(ctx, event, config)
 	}
 	if hostEvent.EventSource() == protocol.SourceHerdr && (response.StatusCode == http.StatusBadRequest || response.StatusCode == http.StatusUnprocessableEntity || response.StatusCode == http.StatusNotFound) {
 		// Permanent schema/freshness/capability rejection must not occupy the

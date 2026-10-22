@@ -38,14 +38,14 @@ func main() {
 
 	var err error
 	switch os.Args[1] {
-	case "authorize-installation":
-		err = runInstallationPairing(os.Args[2:])
 	case "herdr":
 		err = runHerdr(os.Args[2:])
 	case "capabilities":
-		err = json.NewEncoder(os.Stdout).Encode(map[string]any{"version": version, "capabilities": []string{"codex-v1", agent.HerdrCapability, agent.HerdrBindingsCapability, agent.HerdrHostCaptureCapability, agent.InstallationPairingCapability}})
+		err = json.NewEncoder(os.Stdout).Encode(map[string]any{"version": version, "capabilities": []string{"codex-v1", agent.HerdrCapability, agent.HerdrBindingsCapability, agent.HerdrHostCaptureCapability}})
 	case "init":
 		err = runInit(os.Args[2:])
+	case "uninstall":
+		err = runUninstall(os.Args[2:])
 	case "switch-backend":
 		err = runSwitchBackend(os.Args[2:])
 	case "serve":
@@ -312,11 +312,21 @@ func runSwitchBackend(arguments []string) error {
 	if err := flags.Parse(arguments); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 {
-		return fmt.Errorf("switch-backend takes no positional arguments")
+	if flags.NArg() > 1 || (flags.NArg() == 1 && *endpoint != "") {
+		return fmt.Errorf("choose production, staging, or --endpoint <HTTPS_URL>")
+	}
+	if flags.NArg() == 1 {
+		switch flags.Arg(0) {
+		case "production":
+			*endpoint = "https://nova-push.galaxnet.dev"
+		case "staging":
+			*endpoint = "https://notify-staging.galaxnet.dev"
+		default:
+			return fmt.Errorf("backend must be production or staging")
+		}
 	}
 	if *endpoint == "" {
-		return fmt.Errorf("--endpoint is required")
+		return fmt.Errorf("choose production, staging, or --endpoint <HTTPS_URL>")
 	}
 	unlock, err := agent.LockEnrollment(paths.EnrollmentLock)
 	if err != nil {
@@ -340,6 +350,24 @@ func runSwitchBackend(arguments []string) error {
 	if !*force && config.RegistrationState == agent.RegistrationActive && sameNotificationEndpoint(config.Endpoint, next.Endpoint) {
 		fmt.Println("NovaScale notification agent already uses this backend; enrollment was left active.")
 		return nil
+	}
+	// Bind old unassigned events before changing the configuration, including
+	// an upgrade from an agent that did not record queue destinations.
+	if _, err := os.Stat(paths.Database); err == nil {
+		queue, err := agent.OpenQueue(paths.Database)
+		if err != nil {
+			return err
+		}
+		err = queue.ConfigureBackend(context.Background(), config.Endpoint)
+		closeErr := queue.Close()
+		if err != nil {
+			return err
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+	} else if !os.IsNotExist(err) {
+		return err
 	}
 	if err := agent.SaveConfig(paths.ConfigFile, next); err != nil {
 		return err
@@ -386,6 +414,9 @@ func runServe(arguments []string) error {
 		return err
 	}
 	defer queue.Close()
+	if err := queue.ConfigureBackend(context.Background(), config.Endpoint); err != nil {
+		return err
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	daemon := agent.Daemon{
@@ -523,5 +554,5 @@ func runEndpoint(arguments []string) error {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: novascale-agent <init|switch-backend|serve|hook|herdr-hook|herdr|authorize-installation|capabilities|status|registration-state|host-id|endpoint|daemon-version|hooks|app-server|version>")
+	fmt.Fprintln(os.Stderr, "usage: novascale-agent <init|switch-backend|uninstall|serve|hook|herdr-hook|herdr|capabilities|status|registration-state|host-id|endpoint|daemon-version|hooks|app-server|version>")
 }

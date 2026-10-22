@@ -2,10 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"database/sql"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/GalaxNet-Ltd/nova-codex-bootstrap/internal/agent"
 )
@@ -172,9 +176,14 @@ func TestSwitchBackendPreservesIdentityQueueAndWrapperState(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(paths.Database), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(paths.Database, []byte("preserved-queue"), 0o600); err != nil {
+	queue, err := agent.OpenQueue(paths.Database)
+	if err != nil {
 		t.Fatal(err)
 	}
+	if err := queue.Enqueue(context.Background(), "old-event", []byte(`{}`), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	queue.Close()
 	wrapperToken := filepath.Join(home, ".codex", "novascale-app-server-token")
 	if err := os.MkdirAll(filepath.Dir(wrapperToken), 0o700); err != nil {
 		t.Fatal(err)
@@ -204,9 +213,16 @@ func TestSwitchBackendPreservesIdentityQueueAndWrapperState(t *testing.T) {
 	if !bytes.Equal(keyBefore, keyAfter) {
 		t.Fatal("host private key changed during backend switch")
 	}
-	queueAfter, err := os.ReadFile(paths.Database)
-	if err != nil || string(queueAfter) != "preserved-queue" {
-		t.Fatalf("queue state changed: %q, error = %v", string(queueAfter), err)
+	queue, err = agent.OpenQueue(paths.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer queue.Close()
+	if _, err := queue.NextForBackend(context.Background(), time.Now(), config.Endpoint); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("old event reached new backend: %v", err)
+	}
+	if event, err := queue.NextForBackend(context.Background(), time.Now(), "https://sandbox.notify.example.test"); err != nil || event.EventID != "old-event" {
+		t.Fatalf("old queue missing: %v", err)
 	}
 	wrapperAfter, err := os.ReadFile(wrapperToken)
 	if err != nil || string(wrapperAfter) != "preserved-wrapper-token" {

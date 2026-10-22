@@ -55,6 +55,11 @@ func (d *Daemon) refreshConfig() error {
 	if d.Config.HostID != "" && config.HostID != d.Config.HostID {
 		return errors.New("agent host identity changed while daemon was running")
 	}
+	if d.Queue != nil {
+		if err := d.Queue.ConfigureBackend(context.Background(), config.Endpoint); err != nil {
+			return err
+		}
+	}
 	d.Config = config
 	return nil
 }
